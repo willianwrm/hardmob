@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Resources;
 using System.Text;
 using System.Threading;
 
@@ -54,6 +55,11 @@ namespace Hardmob
         #endregion
 
         #region Variables
+        /// <summary>
+        /// Class resource cache
+        /// </summary>
+        private static WeakReference<ResourceManager> _Resource;
+
         /// <summary>
         /// Waiting for <see cref="_Active"/> changes
         /// </summary>
@@ -112,8 +118,8 @@ namespace Hardmob
                 throw new ArgumentNullException(nameof(configurations));
 
             // Get token and chat ID
-            this._Token = configurations.ContainsKey(TOKEN_KEY) ? configurations[TOKEN_KEY] : throw new ArgumentNullException(TOKEN_KEY);
-            this._Chat = configurations.ContainsKey(CHAT_KEY) && long.TryParse(configurations[CHAT_KEY], out long chat) ? chat : throw new ArgumentOutOfRangeException(CHAT_KEY);
+            this._Token = configurations.ContainsKey(TOKEN_KEY) && !string.IsNullOrWhiteSpace(configurations[TOKEN_KEY]) ? configurations[TOKEN_KEY] : throw new ArgumentNullException(TOKEN_KEY, TelegramBot.ResourceManager.GetString("EmptyToken"));
+            this._Chat = configurations.ContainsKey(CHAT_KEY) && long.TryParse(configurations[CHAT_KEY], out long chat) ? chat : throw new ArgumentOutOfRangeException(CHAT_KEY, TelegramBot.ResourceManager.GetString("EmptyChatID"));
 
             // Queued message path
             this._QueuePath = configurations.ContainsKey(QUEUE_PATH_KEY) ? Path.Combine(Core.AppDir, configurations[QUEUE_PATH_KEY]) : Path.Combine(Core.AppDir, DEFAULT_QUEUE_PATH);
@@ -130,16 +136,50 @@ namespace Hardmob
             }
         }
 
-        /// <inheritdoc/>
-        void IDisposable.Dispose()
+        
+        #endregion
+
+        #region Properties
+        /// <summary>
+        /// Class resources
+        /// </summary>
+        public static ResourceManager ResourceManager
         {
-            // Set as not active
-            this._Active = false;
-            this._ActiveWait.Set();
+            get
+            {
+                // Tries by cache
+                if (TelegramBot._Resource?.TryGetTarget(out ResourceManager resource) ?? false)
+                    return resource;
+
+                // Load new resource
+                resource = new(typeof(TelegramBot));
+
+                // Stores at local cache
+                if (TelegramBot._Resource == null)
+                    TelegramBot._Resource = new(resource);
+                else
+                    TelegramBot._Resource.SetTarget(resource);
+
+                // Return resource
+                return resource;
+            }
         }
+
+        /// <summary>
+        /// Thread sending any queued message
+        /// </summary>
+        public Thread QueueSenderThread => this._QueueSender;
         #endregion
 
         #region Public
+        /// <inheritdoc/>
+        public void Dispose()
+        {
+            // Set as inactive
+            this._Active = false;
+            this._ActiveWait.Set();
+        }
+
         /// <summary>
         /// Send message by bot
         /// </summary>
@@ -205,6 +245,8 @@ namespace Hardmob
             JObject json = new();
             json.Add("""chat_id""", this._Chat);
             json.Add("""text""", text);
+            json.Add("""parse_mode""", """markdown""");
+            json.Add("""disable_web_page_preview""", false);
 
             // Prepare full message
             string rawmessage = json.ToString(Newtonsoft.Json.Formatting.None);
@@ -266,8 +308,8 @@ namespace Hardmob
                 }
             }
 
-            // Throws abort exceptions
-            catch (ThreadAbortException) { throw; }
+            // Ignore abort exceptions
+            catch (ThreadAbortException) {; }
 
             // Report other exceptions
             catch (Exception ex) { ex.Log(); }
@@ -294,14 +336,12 @@ namespace Hardmob
 
             // Gets the response
             using WebResponse webresponse = connection.GetResponse();
-            using Stream responsestream = webresponse.GetResponseStream();
-            using StreamReader responsereader = new(responsestream, Encoding.UTF8);
-            string responsetext = responsereader.ReadToEnd();
+            string responsetext = webresponse.GetResponseText();
 
             // Check if it's all ok
             JObject json = JObject.Parse(responsetext);
             if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
-                throw new InvalidDataException($"Invalid Telegram response: {responsetext}");
+                throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}");
         }
 
         /// <summary>

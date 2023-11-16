@@ -25,7 +25,7 @@ namespace Hardmob
                         {
                             // Creates and run on the go
                             using MainService debugservice = new();
-                            debugservice.Start();
+                            debugservice.StartDebug();
 
                             // Shows info about service
                             Console.WriteLine("Press ESC to exit service");
@@ -35,7 +35,11 @@ namespace Hardmob
                             {
                                 // Check if canceled
                                 if (Console.ReadKey(true).Key == ConsoleKey.Escape)
+                                {
+                                    // Stop the service
+                                    debugservice.StopDebug();
                                     break;
+                                }
                             }
                         }
                         return;
