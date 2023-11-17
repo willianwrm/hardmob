@@ -2,6 +2,7 @@
 using IniParser.Model;
 using IniParser.Parser;
 using System.IO;
+using System.Net;
 using System.ServiceProcess;
 
 namespace Hardmob
@@ -22,7 +23,7 @@ namespace Hardmob
         /// <summary>
         /// Crawler configuration section name
         /// </summary>
-        private const string CRAWLER_SECTION = """crawler""";
+        private const string CRAWLER_SECTION = """Crawler""";
 
         /// <summary>
         /// Time before thread abortion when stopping the service
@@ -74,6 +75,10 @@ namespace Hardmob
         /// <inheritdoc/>
         protected override void OnStart(string[] args)
         {
+            // Configuring web security
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls13 | SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+            ServicePointManager.ReusePort = true;
+
             // INI file name
             string inifile = Path.Combine(Core.AppDir, CONFIGURATION_FILE);
 

@@ -3,10 +3,13 @@ using IniParser.Model;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Cache;
+using System.Reflection;
+using System.Text;
 using System.Threading;
 
 namespace Hardmob
@@ -18,6 +21,11 @@ namespace Hardmob
         /// Main URL prefix
         /// </summary>
         private const string BASE_URL = $"""https://{SERVER}/""";
+
+        /// <summary>
+        /// Default pool full interval
+        /// </summary>
+        private const int DEFAULT_POOL_FULL_INTERVAL = 15 * 60 * 1000;
 
         /// <summary>
         /// Default pool interval
@@ -40,11 +48,6 @@ namespace Hardmob
         private const string DEFAULT_USER_AGENT = """Mozilla/5.0""";
 
         /// <summary>
-        /// Maximum time in continuous fast update fail
-        /// </summary>
-        private const int FORCE_FULL_ID_UPDATE = 4 * 60 * 60 * 1000;
-
-        /// <summary>
         /// Forums URL suffix
         /// </summary>
         private const string FORUMS_URL = """forums""";
@@ -63,6 +66,11 @@ namespace Hardmob
         /// Next thread state key
         /// </summary>
         private const string NEXT_THREAD_KEY = """nextthread""";
+
+        /// <summary>
+        /// Pool full interval configuration key
+        /// </summary>
+        private const string POOL_FULL_INTERVAL_KEY = """poolfullinterval""";
 
         /// <summary>
         /// Pool interval configuration key
@@ -117,9 +125,19 @@ namespace Hardmob
         private readonly TelegramBot _Bot;
 
         /// <summary>
+        /// Web cookies
+        /// </summary>
+        private readonly CookieContainer _Cookies = new();
+
+        /// <summary>
         /// Main thread
         /// </summary>
         private readonly Thread _MainThread;
+
+        /// <summary>
+        /// Maximum time before a full check in milliseconds
+        /// </summary>
+        private readonly int _PoolFullInterval;
 
         /// <summary>
         /// Interval between checks in milliseconds
@@ -166,6 +184,7 @@ namespace Hardmob
             // Fetch the configurations
             this._UserAgent = configurations.ContainsKey(USER_AGENT_KEY) && !string.IsNullOrWhiteSpace(configurations[USER_AGENT_KEY]) ? configurations[USER_AGENT_KEY] : DEFAULT_USER_AGENT;
             this._PoolInterval = configurations.ContainsKey(POOL_INTERVAL_KEY) && int.TryParse(configurations[POOL_INTERVAL_KEY], out int poolinterval) ? poolinterval : DEFAULT_POOL_INTERVAL;
+            this._PoolFullInterval = configurations.ContainsKey(POOL_FULL_INTERVAL_KEY) && int.TryParse(configurations[POOL_FULL_INTERVAL_KEY], out int poolfullinterval) ? poolfullinterval : DEFAULT_POOL_FULL_INTERVAL;
             this._TriesBeforeLog = configurations.ContainsKey(TRIES_BEFORE_LOG_KEY) && int.TryParse(configurations[TRIES_BEFORE_LOG_KEY], out int triesbeforelog) ? triesbeforelog : DEFAULT_TRIES_BEFORE_LOG;
             this._StateFile = Path.GetFullPath(Path.Combine(Core.AppDir, configurations.ContainsKey(STATE_FILE_KEY) && !string.IsNullOrWhiteSpace(configurations[STATE_FILE_KEY]) ? configurations[STATE_FILE_KEY] : DEFAULT_STATE_FILE));
 
@@ -174,6 +193,10 @@ namespace Hardmob
                 this._PoolInterval = MINIMUM_POOL_INTERVAL;
             if (this._PoolInterval > MAXIMUM_POOL_INTERVAL)
                 this._PoolInterval = MAXIMUM_POOL_INTERVAL;
+            if (this._PoolFullInterval < MINIMUM_POOL_INTERVAL)
+                this._PoolFullInterval = MINIMUM_POOL_INTERVAL;
+            if (this._PoolFullInterval > MAXIMUM_POOL_INTERVAL)
+                this._PoolFullInterval = MAXIMUM_POOL_INTERVAL;
 
             // Check for state file
             if (File.Exists(this._StateFile))
@@ -226,7 +249,9 @@ namespace Hardmob
         {
             // Initializing HTTPS connection
             HttpWebRequest connection = (HttpWebRequest)HttpWebRequest.Create(url);
+            connection.AllowAutoRedirect = true;
             connection.CachePolicy = new(RequestCacheLevel.NoCacheNoStore);
+            connection.CookieContainer = this._Cookies;
             connection.Host = SERVER;
             connection.KeepAlive = true;
             connection.Method = """GET""";
@@ -292,46 +317,62 @@ namespace Hardmob
         {
             try
             {
+                // Sequential exceptions
+                int exceptions = 0;
+
+                // Last time a update worked
+                int lastupdate = Environment.TickCount;
+
+                // Last save state
+                long lastsavestate = this._NextThread;
+
+                // Debug
+                Debug.WriteLine("Crawler started");
+
                 // While active
                 while (this._Active)
                 {
-                    // Sequential exceptions
-                    int exceptions = 0;
-
-                    // Last time a fast update worked
-                    int lastfastupdate = Environment.TickCount;
-
-                    // Last save state
-                    long laststate = this._NextThread;
-
                     try
                     {
+                        // Debug
+                        Debug.WriteLine($"Next thread: {this._NextThread}");
+
                         // Need to fetch older thread id?
-                        if (this._NextThread <= 0 || (lastfastupdate - Environment.TickCount) > FORCE_FULL_ID_UPDATE)
+                        if (this._NextThread <= 0 || (Environment.TickCount - lastupdate) > this._PoolFullInterval)
                         {
+                            // Debug
+                            Debug.Write($"Full fetch... ");
+
                             // List all available IDs
-                            List<long> ids = new(this.ThreadsID());
+                            HashSet<long> ids = new(this.ThreadsID());
 
-                            // Get the maximum ID
-                            long maximum = ids.Max();
+                            // Debug
+                            Debug.WriteLine($"ok, {ids.Count} threads");
 
-                            // Missed any thread?
-                            if (this._NextThread > 0 && maximum > this._NextThread)
+                            // Did get any thread?
+                            if (ids.Count > 0)
                             {
-                                // Fetching every missed thread
-                                for (long i = this._NextThread; i < maximum; i++)
+                                // Get the maximum ID
+                                long maximum = ids.Max();
+
+                                // Missed any thread?
+                                if (this._NextThread > 0 && maximum >= this._NextThread)
                                 {
-                                    // Process it if in forum
-                                    if (ids.Contains(i))
-                                        this.ProcessThread(i);
+                                    // Fetching every missed thread
+                                    for (long i = this._NextThread; i <= maximum; i++)
+                                    {
+                                        // Process it if in forum
+                                        if (ids.Contains(i))
+                                            this.ProcessThread(i);
+                                    }
                                 }
+
+                                // Update last full update
+                                lastupdate = Environment.TickCount;
+
+                                // Update next fetch
+                                this._NextThread = maximum + 1;
                             }
-
-                            // Update last full update
-                            lastfastupdate = Environment.TickCount;
-
-                            // Update next fetch
-                            this._NextThread = maximum + 1;
                         }
                         else
                         {
@@ -353,13 +394,17 @@ namespace Hardmob
                                 else if (status == ThreadStatus.Public)
                                 {
                                     // Parse the thread
-                                    if (PromoThread.TryParse(threadtext, out PromoThread thread))
+                                    if (PromoThread.TryParse(threadtext, $"{BASE_URL}{THREADS_URL}/{this._NextThread}", out PromoThread thread))
                                     {
-                                        // Process the thread
-                                        this.ProcessThread(thread);
+                                        // Check if it's a promo thread
+                                        if (this.ThreadsID().Contains(this._NextThread))
+                                        {
+                                            // Process the thread
+                                            this.ProcessThread(thread);
 
-                                        // Update last fast update
-                                        lastfastupdate = Environment.TickCount;
+                                            // Update last fast update
+                                            lastupdate = Environment.TickCount;
+                                        }
                                     }
 
                                     // Next thread
@@ -376,11 +421,11 @@ namespace Hardmob
                         exceptions = 0;
 
                         // Next thread ID changed since last save?
-                        if (laststate != this._NextThread)
+                        if (lastsavestate != this._NextThread)
                         {
                             // Save current state
                             this.SaveState();
-                            laststate = this._NextThread;
+                            lastsavestate = this._NextThread;
                         }
                     }
 
@@ -397,7 +442,7 @@ namespace Hardmob
                             ex.Log();
 
                             // Notify bot about it
-                            this._Bot.SendMessage($"Server exception: {ex.Message}");
+                            this._Bot.SendMessage($"<b>Server exception</b>\r\n<b>Message:</b> {WebUtility.HtmlEncode(ex.Message)}\r\n<b>Type:</b> {WebUtility.HtmlEncode(ex.GetType().FullName)}", TelegramParseModes.HTML, false);
                         }
                     }
 
@@ -418,12 +463,23 @@ namespace Hardmob
         /// </summary>
         private void ProcessThread(long id)
         {
+            // Debug
+            Debug.Write($"Processing thread {id}... ");
+
             // Fetch HTML data
             if (this.GetThread(id, out string threadtext) == ThreadStatus.Public)
             {
                 // Parse data and process
-                if (PromoThread.TryParse(threadtext, out PromoThread thread))
+                if (PromoThread.TryParse(threadtext, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread thread))
                     this.ProcessThread(thread);
+
+                // Debug
+                Debug.WriteLine("ok");
+            }
+            else
+            {
+                // Debug
+                Debug.WriteLine("failed");
             }
         }
 
@@ -433,22 +489,30 @@ namespace Hardmob
         private void ProcessThread(PromoThread thread)
         {
             // Message to be sent
-            string message = $"[{thread.Title}]({thread.URL})";
+            StringBuilder output = new();
 
-            // Has full data?
-            if (thread.Link != null && thread.Image != null)
-                message += $"\n[<img src=\"{thread.Image}\">]({thread.Link})";
+            // Write main post
+            output.AppendLine($"<a href=\"{thread.URL}\">{WebUtility.HtmlEncode(thread.Title)}</a>");
 
-            // Only image
-            else if (thread.Image != null)
-                message += $"\n[<img src=\"{thread.Image}\">]";
+            // Has custom link?
+            if (thread.Link != null)
+            {
+                // Write custom link
+                output.AppendLine();
+                output.AppendLine($"<a href=\"{thread.Link}\">LINK</a>");
+            }
 
-            // Only link
-            else if (thread.Link != null)
-                message += $"\n[LINK]({thread.Link})";
-
-            // Send message to bot
-            this._Bot.SendMessage(message);
+            // Has image?
+            if (thread.Image != null)
+            {
+                // Send as photo
+                this._Bot.SendPhoto(thread.Image, output.ToString(), TelegramParseModes.HTML);
+            }
+            else
+            {
+                // Send as message
+                this._Bot.SendMessage(output.ToString(), TelegramParseModes.HTML, false);
+            }
         }
 
         /// <summary>
@@ -456,12 +520,18 @@ namespace Hardmob
         /// </summary>
         private void SaveState()
         {
+            // Debug
+            Debug.Write("Saving state... ");
+
             // Create state data
             JObject state = new();
             state[NEXT_THREAD_KEY] = this._NextThread;
 
             // Save to file
             File.WriteAllText(this._StateFile, state.ToString(Newtonsoft.Json.Formatting.None));
+
+            // Debug
+            Debug.WriteLine("ok");
         }
 
         /// <summary>

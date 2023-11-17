@@ -40,7 +40,7 @@ namespace Hardmob
         /// <summary>
         /// Try extract promo info from raw HTML
         /// </summary>
-        public static bool TryParse(string input, out PromoThread promo)
+        public static bool TryParse(string input, string url, out PromoThread promo)
         {
             // Check input
             if (input != null)
@@ -56,6 +56,7 @@ namespace Hardmob
                         // Start the output
                         promo = new();
                         promo.Title = input.Substring(titlestart + 7, titleend - titlestart - 7).Trim();
+                        promo.URL = url;
 
                         // Get's div content
                         string content = GetContentDiv(input);

@@ -1,5 +1,8 @@
-﻿using System;
+﻿using Hardmob.Helpers;
+using System;
+using System.Diagnostics;
 using System.ServiceProcess;
+using System.Threading;
 
 namespace Hardmob
 {
@@ -13,42 +16,64 @@ namespace Hardmob
         /// </summary>
         static void Main(params string[] args)
         {
-            // Check the start args
-            if (args != null && args.Length > 0)
+            try
             {
-                // Read params
-                switch (args[0].ToLower())
+                // Register debug
+                DebugConsole();
+
+                // Check the start args
+                if (args != null && args.Length > 0)
                 {
-                    // Console mode
-                    case "console":
-                    case "debug":
-                        {
-                            // Creates and run on the go
-                            using MainService debugservice = new();
-                            debugservice.StartDebug();
-
-                            // Shows info about service
-                            Console.WriteLine("Press ESC to exit service");
-
-                            // Wait until canceled
-                            while(true)
+                    // Read params
+                    switch (args[0].ToLower())
+                    {
+                        // Console mode
+                        case "console":
+                        case "debug":
                             {
-                                // Check if canceled
-                                if (Console.ReadKey(true).Key == ConsoleKey.Escape)
+                                // Creates and run on the go
+                                using MainService debugservice = new();
+                                debugservice.StartDebug();
+
+                                // Shows info about service
+                                Console.WriteLine("Press ESC to exit service");
+
+                                // Wait until canceled
+                                while (true)
                                 {
-                                    // Stop the service
-                                    debugservice.StopDebug();
-                                    break;
+                                    // Check if canceled
+                                    if (Console.ReadKey(true).Key == ConsoleKey.Escape)
+                                    {
+                                        // Stop the service
+                                        debugservice.StopDebug();
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        return;
+                            return;
+                    }
                 }
+
+                // Creates and start the main service
+                using MainService service = new();
+                ServiceBase.Run(service);
             }
 
-            // Creates and start the main service
-            using MainService service = new();
-            ServiceBase.Run(service);
+            // Throws abort
+            catch (ThreadAbortException) { throw; }
+
+            // Register exceptions
+            catch (Exception ex) { ex.Log(); }
+        }
+
+        /// <summary>
+        /// Add console do debug
+        /// </summary>
+        [Conditional("DEBUG")]
+        private static void DebugConsole()
+        {
+            // Add console do debug
+            Debug.Listeners.Add(new ConsoleTraceListener());
         }
     }
 }

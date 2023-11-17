@@ -1,8 +1,10 @@
 ﻿using Hardmob.Helpers;
 using IniParser.Model;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -47,6 +49,11 @@ namespace Hardmob
         /// Telegram API method to send messages
         /// </summary>
         private const string TELEGRAM_SEND_MESSAGE_COMMAND = """sendMessage""";
+
+        /// <summary>
+        /// Telegram API method to send photos
+        /// </summary>
+        private const string TELEGRAM_SEND_PHOTO_COMMAND = """sendPhoto""";
 
         /// <summary>
         /// Token configuration key
@@ -122,21 +129,25 @@ namespace Hardmob
             this._Chat = configurations.ContainsKey(CHAT_KEY) && long.TryParse(configurations[CHAT_KEY], out long chat) ? chat : throw new ArgumentOutOfRangeException(CHAT_KEY, TelegramBot.ResourceManager.GetString("EmptyChatID"));
 
             // Queued message path
-            this._QueuePath = configurations.ContainsKey(QUEUE_PATH_KEY) ? Path.Combine(Core.AppDir, configurations[QUEUE_PATH_KEY]) : Path.Combine(Core.AppDir, DEFAULT_QUEUE_PATH);
+            this._QueuePath = configurations.ContainsKey(QUEUE_PATH_KEY) && !string.IsNullOrWhiteSpace(configurations[QUEUE_PATH_KEY]) ? Path.GetFullPath(Path.Combine(Core.AppDir, configurations[QUEUE_PATH_KEY])) : Path.Combine(Core.AppDir, DEFAULT_QUEUE_PATH);
 
             // Check if queue path contains files
             if (Directory.Exists(this._QueuePath) && Directory.EnumerateFiles(this._QueuePath).Any())
             {
+                // Get all files in queue path
+                List<string> queuefiles = new(Directory.EnumerateFiles(this._QueuePath));
+
+                // Sort then to be added in the order they were written
+                queuefiles.Sort((a, b) => File.GetLastWriteTimeUtc(a).CompareTo(File.GetLastWriteTimeUtc(b)));
+
                 // Add all files to queue
-                foreach (string file in Directory.EnumerateFiles(this._QueuePath))
+                foreach (string file in queuefiles)
                     this._Queued.Enqueue(file);
 
                 // Start sending all queued messages
                 this.StartQueueSender();
             }
         }
-
-        
         #endregion
 
         #region Properties
@@ -184,18 +195,34 @@ namespace Hardmob
         /// Send message by bot
         /// </summary>
         /// <param name="text">Texto of message</param>
+        /// <param name="mode">Parse mode</param>
         /// <exception cref="ArgumentNullException"><paramref name="text"/> is null</exception>
         /// <remarks>The message will be enqueued for later send if not succeeded</remarks>
-        public void SendMessage(string text)
+        public void SendMessage(string text, TelegramParseModes mode, bool preview)
         {
             // Validate input
             if (text == null)
                 throw new ArgumentNullException(nameof(text));
 
+            // Prepare the message to be sent
+            JObject message = new();
+            message.Add("""text""", text);
+            message.Add("""disable_web_page_preview""", !preview);
+
+            // Check mode
+            switch (mode)
+            {
+                // Parse enabled
+                case TelegramParseModes.HTML:
+                case TelegramParseModes.MarkdownV2:
+                    message.Add("""parse_mode""", mode.ToString());
+                    break;
+            }
+
             try
             {
                 // Send the message
-                this.SendMessageInternal(text);
+                this.SendInternal(message);
             }
 
             // Throws abort exceptions
@@ -205,10 +232,54 @@ namespace Hardmob
             catch (Exception ex)
             {
                 // Add to queue to be send later
-                this.EnqueueMessage(text);
+                this.EnqueueMessage(message);
 
                 // Log exception
                 ex.Log();
+            }
+        }
+
+        /// <summary>
+        /// Send as photo, will convert the <paramref name="caption"/> to message if fail
+        /// </summary>
+        public void SendPhoto(string photo, string caption, TelegramParseModes mode)
+        {
+            // Validate input
+            if (photo == null)
+                throw new ArgumentNullException(nameof(photo));
+            if (caption == null)
+                throw new ArgumentNullException(nameof(caption));
+
+            // Prepare the message to be sent
+            JObject message = new();
+            message.Add("""photo""", photo);
+            message.Add("""caption""", caption);
+            message.Add("""disable_web_page_preview""", true);
+
+            // Check mode
+            switch (mode)
+            {
+                // Parse enabled
+                case TelegramParseModes.HTML:
+                case TelegramParseModes.MarkdownV2:
+                    message.Add("""parse_mode""", mode.ToString());
+                    break;
+            }
+
+            try
+            {
+                // Send the message
+                this.SendInternal(message);
+            }
+
+            // Throws abort exceptions
+            catch (ThreadAbortException) { throw; }
+
+            // Other exceptions
+            catch
+            {
+                // Continue as message
+                this.SendMessage(caption, mode, false);
             }
         }
         #endregion
@@ -217,16 +288,16 @@ namespace Hardmob
         /// <summary>
         /// Enqueue message to be send later, will save it as file
         /// </summary>
-        private void EnqueueMessage(string text)
+        private void EnqueueMessage(JObject message)
         {
             // Queue path must exists
             Directory.CreateDirectory(this._QueuePath);
 
             // Randomize queue file name
-            string file = Path.Combine(this._QueuePath, $"{Guid.NewGuid():N}.txt");
+            string file = Path.Combine(this._QueuePath, $"{Guid.NewGuid():N}.json");
 
             // Save message to file
-            File.WriteAllText(file, text);
+            File.WriteAllText(file, message.ToString(Formatting.None));
 
             // Add to queue to be send later
             this._Queued.Enqueue(file);
@@ -239,17 +310,16 @@ namespace Hardmob
         /// <summary>
         /// Prepare message to be sent
         /// </summary>
-        private byte[] PrepareMessage(string text)
+        private byte[] PrepareMessage(JObject message)
         {
-            // Prepare data
-            JObject json = new();
-            json.Add("""chat_id""", this._Chat);
-            json.Add("""text""", text);
-            json.Add("""parse_mode""", """markdown""");
-            json.Add("""disable_web_page_preview""", false);
+            // Update to current chat id
+            if (message.ContainsKey("""chat_id"""))
+                message["""chat_id"""] = this._Chat;
+            else
+                message.Add("""chat_id""", this._Chat);
 
             // Prepare full message
-            string rawmessage = json.ToString(Newtonsoft.Json.Formatting.None);
+            string rawmessage = message.ToString(Formatting.None);
 
             // Encode to UTF-8
             return Encoding.UTF8.GetBytes(rawmessage);
@@ -277,10 +347,10 @@ namespace Hardmob
                             if (File.Exists(file))
                             {
                                 // Read message from file
-                                string message = File.ReadAllText(file);
+                                JObject message = JObject.Parse(File.ReadAllText(file));
 
                                 // Send message
-                                this.SendMessageInternal(message);
+                                this.SendInternal(message);
 
                                 // Remove file
                                 File.Delete(file);
@@ -318,13 +388,16 @@ namespace Hardmob
         /// <summary>
         /// Try sending message
         /// </summary>
-        private void SendMessageInternal(string text)
+        private void SendInternal(JObject message)
         {
             // Prepare message to be sent
-            byte[] data = this.PrepareMessage(text);
+            byte[] data = this.PrepareMessage(message);
+
+            // Telegram command
+            string command = message.ContainsKey("""photo""") ? TELEGRAM_SEND_PHOTO_COMMAND : TELEGRAM_SEND_MESSAGE_COMMAND;
 
             // Initializing HTTPS connection
-            HttpWebRequest connection = (HttpWebRequest)HttpWebRequest.Create($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_MESSAGE_COMMAND}");
+            HttpWebRequest connection = (HttpWebRequest)HttpWebRequest.Create($"{TELEGRAM_API_URL}bot{this._Token}/{command}");
             connection.Method = """POST""";
             connection.KeepAlive = false;
             connection.ContentType = """application/json;charset=utf-8""";
