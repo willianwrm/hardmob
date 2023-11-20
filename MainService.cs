@@ -21,6 +21,11 @@ namespace Hardmob
         private const string CONFIGURATION_SAMPLE_FILE = """config-sample.ini""";
 
         /// <summary>
+        /// User agent configuration key
+        /// </summary>
+        private const string USER_AGENT_KEY = """useragent""";
+
+        /// <summary>
         /// Crawler configuration section name
         /// </summary>
         private const string CRAWLER_SECTION = """Crawler""";
@@ -34,6 +39,11 @@ namespace Hardmob
         /// Telegram configuration section name
         /// </summary>
         private const string TELEGRAM_SECTION = """Telegram""";
+
+        /// <summary>
+        /// Application configuration section name
+        /// </summary>
+        private const string APP_SECTION = """App""";
         #endregion
 
         #region Variables
@@ -76,7 +86,7 @@ namespace Hardmob
         protected override void OnStart(string[] args)
         {
             // Configuring web security
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls13 | SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls13 | SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls | SecurityProtocolType.Ssl3;
             ServicePointManager.ReusePort = true;
 
             // INI file name
@@ -103,6 +113,10 @@ namespace Hardmob
 
             // Parse configuration file
             IniData ini = parser.Parse(File.ReadAllText(inifile));
+
+            // Fetch configurations
+            KeyDataCollection app = ini[APP_SECTION];
+            Core.WebUserAgent = app.ContainsKey(USER_AGENT_KEY) && !string.IsNullOrWhiteSpace(app[USER_AGENT_KEY]) ? app[USER_AGENT_KEY] : null;
 
             // Create telegram bot
             this._Telegram = new(ini[TELEGRAM_SECTION]);
