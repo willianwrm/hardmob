@@ -1,4 +1,8 @@
-﻿using System;
+﻿using Hardmob.Helpers;
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Threading;
 
 namespace Hardmob
 {
@@ -11,7 +15,7 @@ namespace Hardmob
         /// <summary>
         /// Empty chars
         /// </summary>
-        private static readonly char[] EMPTY_SPACE_CHARS = new char[] { ' ', '\n', '\r', '\t' };
+        private static readonly char[] EMPTY_SPACE_CHARS = [' ', '\n', '\r', '\t'];
         #endregion
 
         #region Variables
@@ -119,6 +123,14 @@ namespace Hardmob
                                         }
                                     }
                                 }
+                            }
+
+                            // Missing image but not link?
+                            if (promo.Image == null && promo.Link != null)
+                            {
+                                // Try fetch the image from the link
+                                if (TryFetchImage(promo.Link, out string image))
+                                    promo.Image = image;
                             }
                         }
 
@@ -247,6 +259,56 @@ namespace Hardmob
         }
 
         /// <summary>
+        /// Get properties from HTML tag
+        /// </summary>
+        private static Dictionary<string, string> GetValues(string input)
+        {
+            // Initialize output
+            Dictionary<string, string> output = new(StringComparer.OrdinalIgnoreCase);
+
+            // Current position
+            int pos = 0;
+
+            // While not ended
+            while (true)
+            {
+                // Find next value
+                int valuesep = input.IndexOf('=', pos);
+                if (valuesep < 0)
+                    break;
+
+                // Left part
+                string left = input.Substring(pos, valuesep - pos).Trim();
+                int whitespace = left.LastIndexOf(' ');
+                if (whitespace >= 0)
+                    left = left.Substring(whitespace + 1);
+
+                // Find where the value starts
+                int start = input.IndexOf('"', valuesep + 1);
+                if (start < 0)
+                    break;
+
+                // Find where the value ends
+                int end = input.IndexOf('"', start + 1);
+                if (end < start)
+                    break;
+
+                // Right part
+                string right = input.Substring(start + 1, end - start - 1);
+
+                // Return item
+                if (!output.ContainsKey(left))
+                    output.Add(left, right);
+
+                // Update next search
+                pos = end + 1;
+            }
+
+            // Returns itens
+            return output;
+        }
+
+        /// <summary>
         /// Check if current div has 'content' class
         /// </summary>
         private static bool IsContentDiv(string input, int start, int close)
@@ -300,6 +362,87 @@ namespace Hardmob
             }
 
             // Probably not image
+            return false;
+        }
+
+        /// <summary>
+        /// Try to fetch an image from URL HTML
+        /// </summary>
+        private static bool TryFetchImage(string url, out string image)
+        {          
+            try
+            {
+                // Initializing connection
+                HttpWebRequest connection = Core.CreateWebRequest(url);
+
+                // Gets the response
+                using WebResponse webresponse = connection.GetResponse();
+                string responsetext = webresponse.GetResponseText();
+
+                // Current position in the response
+                int pos = 0;
+
+                // While not ended
+                while (true)
+                {
+                    // Search for next meta, start
+                    int start = responsetext.IndexOf("""<meta""", pos, StringComparison.OrdinalIgnoreCase);
+                    if (start < 0)
+                        break;
+
+                    // Next end
+                    int end = responsetext.IndexOf("""/>""", start, StringComparison.OrdinalIgnoreCase);
+                    if (end <= start)
+                        break;
+
+                    // Fetch meta values
+                    Dictionary<string, string> values = GetValues(responsetext.Substring(start + 5, end - start - 5));
+
+                    // Check if content is an image link
+                    bool ContentImage(out string imageurl)
+                    {
+                        // Content is image link?
+                        if (values.TryGetValue("""content""", out string content) && IsImageURL(content))
+                        {
+                            // Image found
+                            imageurl = content;
+                            return true;
+                        }
+
+                        // Not found
+                        imageurl = null;
+                        return false;
+                    }
+
+                    // Does have property and it is open-graph image?
+                    if (values.TryGetValue("""property""", out string property) && StringComparer.OrdinalIgnoreCase.Equals(property, """og:image"""))
+                    {
+                        // Content is image link?
+                        if (ContentImage(out image))
+                            return true;
+                    }
+
+                    // Does have name and it is twitter image?
+                    if (values.TryGetValue("""name""", out string name) && StringComparer.OrdinalIgnoreCase.Equals(name, """twitter:image"""))
+                    {
+                        // Content is image link?
+                        if (ContentImage(out image))
+                            return true;
+                    }
+
+                    // Update next search
+                    pos = end + 2;
+                }
+            }
+
+            // Throws abort exceptions
+            catch (ThreadAbortException) { throw; }
+
+            // Ignore any other exception
+            catch {; }
+
+            // Image not found
+            image = null;
             return false;
         }
         #endregion
