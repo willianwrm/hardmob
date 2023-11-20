@@ -1,6 +1,7 @@
 ﻿using Hardmob.Helpers;
 using System;
 using System.IO;
+using System.Net;
 using System.Reflection;
 
 namespace Hardmob
@@ -10,7 +11,29 @@ namespace Hardmob
     /// </summary>
     static class Core
     {
+        #region Constants
+        /// <summary>
+        /// Default web accept header
+        /// </summary>
+        public const string WEB_ACCEPT = """text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8""";
+
+        /// <summary>
+        /// Default web accept-encoding header
+        /// </summary>
+        public const string WEB_ACCEPT_ENCODING = """none""";
+
+        /// <summary>
+        /// Default web accept-language header
+        /// </summary>
+        public const string WEB_ACCEPT_LANGUAGE = """en-US""";
+        #endregion
+
         #region Statics
+        /// <summary>
+        /// Web user-agent header
+        /// </summary>
+        public static string WebUserAgent;
+
         /// <summary>
         /// Current APP's directory
         /// </summary>
@@ -71,6 +94,28 @@ namespace Hardmob
                 // Return the name
                 return Core._ProductName;
             }
+        }
+        #endregion
+
+        #region Public
+        /// <summary>
+        /// Create default web request
+        /// </summary>
+        public static HttpWebRequest CreateWebRequest(string url, string method = """GET""")
+        {
+            // Create request
+            HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(url);
+
+            // Default configuration
+            request.Accept = WEB_ACCEPT;
+            request.AllowAutoRedirect = true;
+            request.Headers.Add("""Accept-Encoding""", WEB_ACCEPT_ENCODING);
+            request.Headers.Add("""Accept-Language""", WEB_ACCEPT_LANGUAGE);
+            request.Method = method;
+            request.UserAgent = WebUserAgent;
+
+            // Returns default request
+            return request;
         }
         #endregion
 
