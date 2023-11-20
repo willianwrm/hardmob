@@ -8,7 +8,6 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Cache;
-using System.Reflection;
 using System.Text;
 using System.Threading;
 
@@ -41,11 +40,6 @@ namespace Hardmob
         /// Default tries before log
         /// </summary>
         private const int DEFAULT_TRIES_BEFORE_LOG = 60;
-
-        /// <summary>
-        /// User agent as web browser
-        /// </summary>
-        private const string DEFAULT_USER_AGENT = """Mozilla/5.0""";
 
         /// <summary>
         /// Forums URL suffix
@@ -103,11 +97,6 @@ namespace Hardmob
         private const string TRIES_BEFORE_LOG_KEY = """triesbeforelog""";
 
         /// <summary>
-        /// User agent configuration key
-        /// </summary>
-        private const string USER_AGENT_KEY = """useragent""";
-
-        /// <summary>
         /// Suffix for thread ID
         /// </summary>
         private static readonly char[] THREAD_ID_SUFIX = new char[] { '_', '-', ' ' };
@@ -123,6 +112,11 @@ namespace Hardmob
         /// Telegram bot
         /// </summary>
         private readonly TelegramBot _Bot;
+
+        /// <summary>
+        /// Cache policy
+        /// </summary>
+        private readonly RequestCachePolicy _Cache = new(RequestCacheLevel.NoCacheNoStore);
 
         /// <summary>
         /// Web cookies
@@ -155,11 +149,6 @@ namespace Hardmob
         private readonly int _TriesBeforeLog;
 
         /// <summary>
-        /// Web user-agent to be used by HTTP
-        /// </summary>
-        private readonly string _UserAgent;
-
-        /// <summary>
         /// Crawler is active
         /// </summary>
         private bool _Active = true;
@@ -182,7 +171,6 @@ namespace Hardmob
             this._Bot = bot ?? throw new ArgumentNullException(nameof(bot));
 
             // Fetch the configurations
-            this._UserAgent = configurations.ContainsKey(USER_AGENT_KEY) && !string.IsNullOrWhiteSpace(configurations[USER_AGENT_KEY]) ? configurations[USER_AGENT_KEY] : DEFAULT_USER_AGENT;
             this._PoolInterval = configurations.ContainsKey(POOL_INTERVAL_KEY) && int.TryParse(configurations[POOL_INTERVAL_KEY], out int poolinterval) ? poolinterval : DEFAULT_POOL_INTERVAL;
             this._PoolFullInterval = configurations.ContainsKey(POOL_FULL_INTERVAL_KEY) && int.TryParse(configurations[POOL_FULL_INTERVAL_KEY], out int poolfullinterval) ? poolfullinterval : DEFAULT_POOL_FULL_INTERVAL;
             this._TriesBeforeLog = configurations.ContainsKey(TRIES_BEFORE_LOG_KEY) && int.TryParse(configurations[TRIES_BEFORE_LOG_KEY], out int triesbeforelog) ? triesbeforelog : DEFAULT_TRIES_BEFORE_LOG;
@@ -247,15 +235,11 @@ namespace Hardmob
         /// </summary>
         private HttpWebRequest CreateConnection(string url)
         {
-            // Initializing HTTPS connection
-            HttpWebRequest connection = (HttpWebRequest)HttpWebRequest.Create(url);
-            connection.AllowAutoRedirect = true;
-            connection.CachePolicy = new(RequestCacheLevel.NoCacheNoStore);
+            // Initializing connection
+            HttpWebRequest connection = Core.CreateWebRequest(url);
+            connection.CachePolicy = this._Cache;
             connection.CookieContainer = this._Cookies;
-            connection.Host = SERVER;
             connection.KeepAlive = true;
-            connection.Method = """GET""";
-            connection.UserAgent = this._UserAgent;
 
             // Return connection
             return connection;

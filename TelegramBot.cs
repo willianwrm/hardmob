@@ -333,7 +333,7 @@ namespace Hardmob
             try
             {
                 // Signals to wait
-                WaitHandle[] waits = new WaitHandle[] { this._QueuedWait, this._ActiveWait };
+                WaitHandle[] waits = [this._QueuedWait, this._ActiveWait];
 
                 // While bot is active
                 while (this._Active)
@@ -397,11 +397,10 @@ namespace Hardmob
             string command = message.ContainsKey("""photo""") ? TELEGRAM_SEND_PHOTO_COMMAND : TELEGRAM_SEND_MESSAGE_COMMAND;
 
             // Initializing HTTPS connection
-            HttpWebRequest connection = (HttpWebRequest)HttpWebRequest.Create($"{TELEGRAM_API_URL}bot{this._Token}/{command}");
-            connection.Method = """POST""";
-            connection.KeepAlive = false;
-            connection.ContentType = """application/json;charset=utf-8""";
+            HttpWebRequest connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", """POST""");
             connection.ContentLength = data.Length;
+            connection.ContentType = """application/json;charset=utf-8""";
+            connection.KeepAlive = false;
 
             // Connects and them post data
             using (Stream connectionstream = connection.GetRequestStream())
