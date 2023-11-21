@@ -15,12 +15,12 @@ namespace Hardmob
         /// <summary>
         /// Default web accept header
         /// </summary>
-        public const string WEB_ACCEPT = """text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8""";
+        public const string WEB_ACCEPT = """text/html,application/xhtml+xml,application/xml""";
 
         /// <summary>
         /// Default web accept-encoding header
         /// </summary>
-        public const string WEB_ACCEPT_ENCODING = """none""";
+        public const string WEB_ACCEPT_ENCODING = """gzip, deflate""";
 
         /// <summary>
         /// Default web accept-language header
@@ -109,6 +109,7 @@ namespace Hardmob
             // Default configuration
             request.Accept = WEB_ACCEPT;
             request.AllowAutoRedirect = true;
+            request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
             request.Headers.Add("""Accept-Encoding""", WEB_ACCEPT_ENCODING);
             request.Headers.Add("""Accept-Language""", WEB_ACCEPT_LANGUAGE);
             request.Method = method;
