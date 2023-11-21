@@ -1,4 +1,5 @@
 ﻿using Hardmob.Helpers;
+using ImageMagick;
 using IniParser.Model;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -29,6 +30,11 @@ namespace Hardmob
         /// Queue default path name
         /// </summary>
         private const string DEFAULT_QUEUE_PATH = """telegram-queue""";
+
+        /// <summary>
+        /// JSON content-type header value
+        /// </summary>
+        private const string JSON_CONTENT_TYPE = """application/json;charset=utf-8""";
 
         /// <summary>
         /// Queue path key
@@ -240,47 +246,47 @@ namespace Hardmob
         }
 
         /// <summary>
-        /// Send as photo, will convert the <paramref name="caption"/> to message if fail
+        /// Try send as photo
         /// </summary>
-        public void SendPhoto(string photo, string caption, TelegramParseModes mode)
+        public bool TrySendPhoto(string photo, string caption, TelegramParseModes mode)
         {
             // Validate input
-            if (photo == null)
-                throw new ArgumentNullException(nameof(photo));
-            if (caption == null)
-                throw new ArgumentNullException(nameof(caption));
-
-            // Prepare the message to be sent
-            JObject message = new();
-            message.Add("""photo""", photo);
-            message.Add("""caption""", caption);
-            message.Add("""disable_web_page_preview""", true);
-
-            // Check mode
-            switch (mode)
+            if (photo != null && caption != null)
             {
-                // Parse enabled
-                case TelegramParseModes.HTML:
-                case TelegramParseModes.MarkdownV2:
-                    message.Add("""parse_mode""", mode.ToString());
-                    break;
+                // Prepare the message to be sent
+                JObject message = new();
+                message.Add("""photo""", photo);
+                message.Add("""caption""", caption);
+                message.Add("""disable_web_page_preview""", true);
+
+                // Check mode
+                switch (mode)
+                {
+                    // Parse enabled
+                    case TelegramParseModes.HTML:
+                    case TelegramParseModes.MarkdownV2:
+                        message.Add("""parse_mode""", mode.ToString());
+                        break;
+                }
+
+                try
+                {
+                    // Send the message
+                    this.SendInternal(message);
+
+                    // Photo sent
+                    return true;
+                }
+
+                // Throws abort exceptions
+                catch (ThreadAbortException) { throw; }
+
+                // Try sending data directly
+                catch { return this.TrySendPhotoAsData(photo, caption, mode); }
             }
 
-            try
-            {
-                // Send the message
-                this.SendInternal(message);
-            }
-
-            // Throws abort exceptions
-            catch (ThreadAbortException) { throw; }
-
-            // Other exceptions
-            catch
-            {
-                // Continue as message
-                this.SendMessage(caption, mode, false);
-            }
+            // Not sent
+            return false;
         }
         #endregion
 
@@ -317,6 +323,34 @@ namespace Hardmob
                 message["""chat_id"""] = this._Chat;
             else
                 message.Add("""chat_id""", this._Chat);
+
+            // Prepare full message
+            string rawmessage = message.ToString(Formatting.None);
+
+            // Encode to UTF-8
+            return Encoding.UTF8.GetBytes(rawmessage);
+        }
+
+        /// <summary>
+        /// Prepare message to be sent
+        /// </summary>
+        private byte[] PrepareMessage(JObject message, TelegramParseModes mode)
+        {
+            // Update to current chat id
+            if (message.ContainsKey("""chat_id"""))
+                message["""chat_id"""] = this._Chat;
+            else
+                message.Add("""chat_id""", this._Chat);
+
+            // Check mode
+            switch (mode)
+            {
+                // Parse enabled
+                case TelegramParseModes.HTML:
+                case TelegramParseModes.MarkdownV2:
+                    message.Add("""parse_mode""", mode.ToString());
+                    break;
+            }
 
             // Prepare full message
             string rawmessage = message.ToString(Formatting.None);
@@ -399,7 +433,7 @@ namespace Hardmob
             // Initializing HTTPS connection
             HttpWebRequest connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", """POST""");
             connection.ContentLength = data.Length;
-            connection.ContentType = """application/json;charset=utf-8""";
+            connection.ContentType = JSON_CONTENT_TYPE;
             connection.KeepAlive = false;
 
             // Connects and them post data
@@ -414,6 +448,102 @@ namespace Hardmob
             JObject json = JObject.Parse(responsetext);
             if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
                 throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}");
+        }
+
+        /// <summary>
+        /// Send photo as multi-part POST
+        /// </summary>
+        private void SendPhoto(byte[] raw, string mimetype, string caption, TelegramParseModes mode)
+        {
+            // Boundary separador
+            string boundary = $"boundary{Guid.NewGuid():N}";
+            byte[] boundarydata = Encoding.ASCII.GetBytes($"\r\n--{boundary}\r\n");
+            byte[] boundaryenddata = Encoding.ASCII.GetBytes($"\r\n--{boundary}--\r\n");
+
+            // Multi part stream
+            using MemoryStream multipart = new();
+
+            // Writes form-data
+            void WriteFormData(string key, string value)
+            {
+                // Writes the boundary
+                multipart.Write(boundarydata, 0, boundarydata.Length);
+
+                // Writes header
+                string header = $"Content-Disposition: form-data; name=\"{key}\"\r\n\r\n";
+                byte[] headerdata = Encoding.UTF8.GetBytes(header);
+                multipart.Write(headerdata, 0, headerdata.Length);
+
+                // Writes data value
+                byte[] valuedata = Encoding.UTF8.GetBytes(value);
+                multipart.Write(valuedata, 0, valuedata.Length);
+            }
+
+            // Writes form-data values
+            WriteFormData("""caption""", caption);
+            WriteFormData("""chat_id""", this._Chat.ToString());
+
+            // Check mode
+            switch (mode)
+            {
+                // Parse enabled
+                case TelegramParseModes.HTML:
+                case TelegramParseModes.MarkdownV2:
+                    WriteFormData("""parse_mode""", mode.ToString());
+                    break;
+            }
+
+            // Writing the photo bytes
+            {
+                // Writes the boundary
+                multipart.Write(boundarydata, 0, boundarydata.Length);
+
+                // Writes header
+                string header = $"Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\nContent-Type: {mimetype}\r\n\r\n";
+                byte[] headerdata = Encoding.UTF8.GetBytes(header);
+                multipart.Write(headerdata, 0, headerdata.Length);
+
+                // Writes the file
+                multipart.Write(raw, 0, raw.Length);
+            }
+
+            // Finalize with end boundary
+            multipart.Write(boundaryenddata, 0, boundaryenddata.Length);
+            multipart.Position = 0;
+
+            // Initializing HTTPS connection
+            HttpWebRequest connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", """POST""");
+            connection.ContentLength = multipart.Length;
+            connection.ContentType = $"multipart/form-data; boundary=\"{boundary}\"";
+            connection.KeepAlive = false;
+
+            try
+            {
+                // Connects and post data
+                using (Stream connectionstream = connection.GetRequestStream())
+                    multipart.CopyTo(connectionstream);
+
+                // Gets the response
+                using WebResponse webresponse = connection.GetResponse();
+                string responsetext = webresponse.GetResponseText();
+
+                // Check if it's all ok
+                JObject json = JObject.Parse(responsetext);
+                if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
+                    throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}{Environment.NewLine}{json.ToString(Formatting.None)}");
+            }
+
+            // Web exceptions
+            catch (WebException wex)
+            {
+                // Is there a response?
+                string errortext = wex.Response?.GetResponseText();
+                if (errortext != null)
+                    throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {wex.Message}{Environment.NewLine}{errortext}");
+
+                // Nothing to do
+                throw;
+            }
         }
 
         /// <summary>
@@ -439,6 +569,79 @@ namespace Hardmob
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Try download and send photo as multi-part POST
+        /// </summary>
+        private bool TrySendPhotoAsData(string photo, string caption, TelegramParseModes mode)
+        {
+            try
+            {
+                // Download image data
+                HttpWebRequest connection = Core.CreateWebRequest(photo);
+                MemoryStream imagestream = new();
+                {
+                    // Read response to stream
+                    using WebResponse webresponse = connection.GetResponse();
+                    using Stream webstream = webresponse.GetResponseStream();
+                    webstream.CopyTo(imagestream);
+                    imagestream.Position = 0;
+                }
+
+                // Image data to be send
+                byte[] imagedata;
+                string mimetype;
+
+                // Read the image
+                using MagickImage image = new(imagestream);
+
+                // Check the real format of image
+                switch (image.Format)
+                {
+                    // JPEG
+                    case MagickFormat.Jpg:
+                    case MagickFormat.Jpeg:
+                        imagedata = imagestream.ToArray();
+                        mimetype = """image/jpg""";
+                        break;
+
+                    // PNG
+                    case MagickFormat.Png:
+                        imagedata = imagestream.ToArray();
+                        mimetype = """image/png""";
+                        break;
+
+                    // Other formats
+                    default:
+                        {
+                            // Force JPG format
+                            image.Format = MagickFormat.Jpg;
+                            image.Quality = 90;
+
+                            // Convert to JPG
+                            using MemoryStream jpegstream = new();
+                            image.Write(jpegstream);
+
+                            // Get data
+                            imagedata = jpegstream.ToArray();
+                            mimetype = """image/png""";
+                        }
+                        break;
+                }
+
+                // Send directly
+                this.SendPhoto(imagedata, mimetype, caption, mode);
+            }
+
+            // Throws abort exceptions
+            catch (ThreadAbortException) { throw; }
+
+            // Ignore any other exception
+            catch {; }
+
+            // Not sent
+            return false;
         }
         #endregion
     }
