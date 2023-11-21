@@ -1,6 +1,7 @@
 ﻿using Hardmob.Helpers;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Threading;
 
@@ -16,9 +17,19 @@ namespace Hardmob
         /// Empty chars
         /// </summary>
         private static readonly char[] EMPTY_SPACE_CHARS = [' ', '\n', '\r', '\t'];
+
+        /// <summary>
+        /// Ignoring extra info
+        /// </summary>
+        private static readonly string[] IGNORE_EXTRA_INFO = ["""info""", """http""", """https""", """link""", """site"""];
         #endregion
 
         #region Variables
+        /// <summary>
+        /// Extra relative informations
+        /// </summary>
+        public string Extra;
+
         /// <summary>
         /// Image URL, may be null
         /// </summary>
@@ -62,28 +73,60 @@ namespace Hardmob
                         promo.Title = input.Substring(titlestart + 7, titleend - titlestart - 7).Trim();
                         promo.URL = url;
 
-                        // Get's div content
+                        // Get div content
                         string content = GetContentDiv(input);
                         if (content != null)
                         {
-                            // Try find where any link starts
-                            int linkstart = content.IndexOf("href=\"", StringComparison.OrdinalIgnoreCase);
-                            if (linkstart > 0)
+                            // Finding LINK
                             {
-                                // Find where it ends
-                                int linkend = content.IndexOf('"', linkstart + 6);
-                                if (linkend > linkstart)
-                                    promo.Link = content.Substring(linkstart + 6, linkend - linkstart - 6);
+                                // Current position
+                                int pos = 0;
+
+                                // While not ended
+                                while (true)
+                                {
+                                    // Try find where any link starts
+                                    int linkstart = content.IndexOf("href=\"", pos, StringComparison.OrdinalIgnoreCase);
+                                    if (linkstart < 0)
+                                        break;
+
+                                    // Find where it ends
+                                    int linkend = content.IndexOf('"', linkstart + 6);
+                                    if (linkend <= linkstart)
+                                        break;
+
+                                    // Validate link
+                                    string link = content.Substring(linkstart + 6, linkend - linkstart - 6);
+                                    if (IsFullURL(link))
+                                    {
+                                        // Link found
+                                        promo.Link = link;
+                                        break;
+                                    }
+
+                                    // Next search
+                                    pos = linkend + 1;
+                                }
                             }
 
-                            // Try find image tag
-                            int imgtagstart = content.IndexOf("<img", StringComparison.OrdinalIgnoreCase);
-                            if (imgtagstart > 0)
+                            // Finding image
                             {
-                                // Find where it ends
-                                int imgtagend = content.IndexOf("/>", imgtagstart + 4, StringComparison.Ordinal);
-                                if (imgtagend > imgtagstart)
+                                // Current position
+                                int pos = 0;
+
+                                // While not ended
+                                while (true)
                                 {
+                                    // Try find image tag
+                                    int imgtagstart = content.IndexOf("<img", pos, StringComparison.OrdinalIgnoreCase);
+                                    if (imgtagstart < 0)
+                                        break;
+
+                                    // Find where it ends
+                                    int imgtagend = content.IndexOf("/>", imgtagstart + 4, StringComparison.Ordinal);
+                                    if (imgtagend <= imgtagstart)
+                                        break;
+
                                     // Try find image source start
                                     int imgsourcestart = content.IndexOf("src=\"", imgtagstart, imgtagend - imgtagstart, StringComparison.OrdinalIgnoreCase);
                                     if (imgsourcestart > 0)
@@ -91,24 +134,70 @@ namespace Hardmob
                                         // Find where source ends
                                         int imgsourcesend = content.IndexOf('\"', imgsourcestart + 5);
                                         if (imgsourcesend > imgsourcestart)
-                                            promo.Image = content.Substring(imgsourcestart + 5, imgsourcesend - imgsourcestart - 5);
+                                        {
+                                            // Validate URL
+                                            string imageurl = content.Substring(imgsourcestart + 5, imgsourcesend - imgsourcestart - 5);
+                                            if (IsImageURL(imageurl))
+                                            {
+                                                // Image found
+                                                promo.Image = imageurl;
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    // Next search
+                                    pos = imgtagend + 2;
+                                }
+                            }
+                        }
+
+                        // Get description meta
+                        string description = GetDescriptionMeta(input);
+                        if (description != null)
+                        {
+                            // Extra important informations
+                            List<string> extra = new();
+
+                            // For each line of description
+                            foreach (string line in description.Split('\n'))
+                            {
+                                // Get some extra info
+                                int n = line.IndexOf(':');
+                                if (n < 0)
+                                    n = line.IndexOf('=');
+
+                                // Any extra info?
+                                if (n > 0 && n < line.Length - 1)
+                                {
+                                    // Get left part, doesn't add if it's just a link
+                                    string left = line.Substring(0, n).Trim();
+                                    if (!IGNORE_EXTRA_INFO.Contains(left, StringComparer.OrdinalIgnoreCase))
+                                    {
+                                        // Get the right part, must not be empty
+                                        string right = line.Substring(n + 1);
+                                        if (!string.IsNullOrWhiteSpace(right))
+                                            extra.Add(line.Trim());
                                     }
                                 }
                             }
+
+                            // Does have any extra info?
+                            if (extra.Count > 0)
+                                promo.Extra = string.Join(Environment.NewLine, extra);
                         }
 
                         // Missing link or image?
                         if (promo.Link == null || promo.Image == null)
                         {
-                            // Gets description meta
-                            string description = GetDescriptionMeta(input);
+                            // Have description?
                             if (description != null)
                             {
                                 // Splits all words
                                 foreach (string item in description.Split(EMPTY_SPACE_CHARS, StringSplitOptions.RemoveEmptyEntries))
                                 {
-                                    // Check for URL
-                                    if (item.StartsWith("""https://""") || item.StartsWith("""http://"""))
+                                    // Item is full URL?
+                                    if (IsFullURL(item))
                                     {
                                         // Look like image?
                                         if (IsImageURL(item))
@@ -331,33 +420,68 @@ namespace Hardmob
         }
 
         /// <summary>
+        /// Check if it's a full HTTP URL
+        /// </summary>
+        private static bool IsFullURL(string url)
+        {
+            // Check minimum size
+            if (url != null && url.Length > 7)
+            {
+                // Check for HTTP
+                if ((url[0] == 'h' || url[0] == 'H') &&
+                    (url[1] == 't' || url[1] == 'T') &&
+                    (url[2] == 't' || url[2] == 'T') &&
+                    (url[3] == 'p' || url[3] == 'P'))
+                {
+                    // Check for next char, must be S or :
+                    switch (url[4])
+                    {
+                        // HTTPS://
+                        case 's':
+                        case 'S':
+                            return url.Length > 8 && url[5] == ':' && url[6] == '/' && url[7] == '/';
+
+                        // HTTP://
+                        case ':':
+                            return url[5] == '/' && url[6] == '/';
+                    }
+                }
+            }
+
+            // Invalid
+            return false;
+        }
+
+        /// <summary>
         /// Check if URL seems to be image
         /// </summary>
         private static bool IsImageURL(string url)
         {
-            // Check for extension
-            int n = url.LastIndexOf('.');
-            if (n > 0)
+            // Full HTTP?
+            if (IsFullURL(url))
             {
                 // Remove any extra url
                 int extra = url.IndexOf('?');
                 if (extra > 0)
                     url = url.Substring(0, extra);
 
-                // Get extension
-                string extension = url.Substring(n + 1);
-
-                // Check extension
-                switch (extension.ToUpper())
+                // Check for extension
+                int n = url.LastIndexOf('.');
+                if (n > 0)
                 {
-                    // Image extensions
-                    case "PNG":
-                    case "BMP":
-                    case "JPG":
-                    case "JPEG":
-                    case "GIF":
-                    case "WEBP":
-                        return true;
+                    // Get extension
+                    string extension = url.Substring(n + 1);
+
+                    // Check extension
+                    switch (extension.ToUpper())
+                    {
+                        // Image extensions
+                        case "PNG":
+                        case "JPG":
+                        case "JPEG":
+                        case "WEBP":
+                            return true;
+                    }
                 }
             }
 
@@ -417,8 +541,8 @@ namespace Hardmob
                                     case """og:image""":
                                     case """twitter:image""":
                                         {
-                                            // Content is image link?
-                                            if (IsImageURL(content))
+                                            // Content is full link?
+                                            if (IsFullURL(content))
                                             {
                                                 // Image found
                                                 image = content;
@@ -477,7 +601,7 @@ namespace Hardmob
                             if (imgend <= imgstart)
                                 break;
 
-                            // It's a image URL?
+                            // It's an image URL?
                             string imgurl = script.Substring(imgstart + 1, imgend - imgstart - 1);
                             if (IsImageURL(imgurl))
                             {

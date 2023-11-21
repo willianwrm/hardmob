@@ -97,6 +97,16 @@ namespace Hardmob
         private const string TRIES_BEFORE_LOG_KEY = """triesbeforelog""";
 
         /// <summary>
+        /// Limit size for caption in sendPhoto command
+        /// </summary>
+        private const int SEND_PHOTO_CAPTION_LENGTH = 1024;
+
+        /// <summary>
+        /// Limit size for message in sendMessage command
+        /// </summary>
+        private const int SEND_MESSAGE_TEXT_LENGTH = 4096;
+
+        /// <summary>
         /// Suffix for thread ID
         /// </summary>
         private static readonly char[] THREAD_ID_SUFIX = new char[] { '_', '-', ' ' };
@@ -475,8 +485,12 @@ namespace Hardmob
             // Message to be sent
             StringBuilder output = new();
 
+            // Message without values, used to compute parsed size
+            StringBuilder parsed = new();
+
             // Write main post
             output.AppendLine($"<a href=\"{thread.URL}\">{WebUtility.HtmlEncode(thread.Title)}</a>");
+            parsed.AppendLine(thread.Title);
 
             // Has custom link?
             if (thread.Link != null)
@@ -484,19 +498,44 @@ namespace Hardmob
                 // Write custom link
                 output.AppendLine();
                 output.AppendLine($"<a href=\"{thread.Link}\">LINK</a>");
+                parsed.AppendLine();
+                parsed.AppendLine("LINK");
+            }
+
+            // Has any extra info?
+            if (thread.Extra != null)
+            {
+                // Write description
+                output.AppendLine();
+                output.AppendLine(thread.Extra);
+                parsed.AppendLine();
+                parsed.AppendLine(thread.Extra);
             }
 
             // Has image?
             if (thread.Image != null)
             {
+                // Prepare caption message
+                string caption = output.ToString();
+
+                // Limiting the length
+                if (parsed.Length > SEND_PHOTO_CAPTION_LENGTH)
+                    caption = caption.Substring(0, caption.Length - (parsed.Length - SEND_PHOTO_CAPTION_LENGTH));
+
                 // Send as photo
-                this._Bot.SendPhoto(thread.Image, output.ToString(), TelegramParseModes.HTML);
+                if (this._Bot.TrySendPhoto(thread.Image, caption, TelegramParseModes.HTML))
+                    return;
             }
-            else
-            {
-                // Send as message
-                this._Bot.SendMessage(output.ToString(), TelegramParseModes.HTML, false);
-            }
+
+            // Prepare text message
+            string text = output.ToString();
+
+            // Limiting the length
+            if (parsed.Length > SEND_MESSAGE_TEXT_LENGTH)
+                text = text.Substring(0, text.Length - (parsed.Length - SEND_MESSAGE_TEXT_LENGTH));
+
+            // Send as message
+            this._Bot.SendMessage(text, TelegramParseModes.HTML, false);
         }
 
         /// <summary>
