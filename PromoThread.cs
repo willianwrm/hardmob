@@ -339,13 +339,13 @@ namespace Hardmob
             int n = url.LastIndexOf('.');
             if (n > 0)
             {
+                // Remove any extra url
+                int extra = url.IndexOf('?');
+                if (extra > 0)
+                    url = url.Substring(0, extra);
+
                 // Get extension
                 string extension = url.Substring(n + 1);
-
-                // Remove any extra url
-                int extra = extension.IndexOf('?');
-                if (extra > 0)
-                    extension = extension.Substring(0, extra);
 
                 // Check extension
                 switch (extension.ToUpper())
@@ -369,7 +369,7 @@ namespace Hardmob
         /// Try to fetch an image from URL HTML
         /// </summary>
         private static bool TryFetchImage(string url, out string image)
-        {          
+        {
             try
             {
                 // Initializing connection
@@ -379,59 +379,120 @@ namespace Hardmob
                 using WebResponse webresponse = connection.GetResponse();
                 string responsetext = webresponse.GetResponseText();
 
-                // Current position in the response
-                int pos = 0;
-
-                // While not ended
-                while (true)
+                // Trying meta data
                 {
-                    // Search for next meta, start
-                    int start = responsetext.IndexOf("""<meta""", pos, StringComparison.OrdinalIgnoreCase);
-                    if (start < 0)
-                        break;
+                    // Current position in the response
+                    int pos = 0;
 
-                    // Next end
-                    int end = responsetext.IndexOf("""/>""", start, StringComparison.OrdinalIgnoreCase);
-                    if (end <= start)
-                        break;
-
-                    // Fetch meta values
-                    Dictionary<string, string> values = GetValues(responsetext.Substring(start + 5, end - start - 5));
-
-                    // Check if content is an image link
-                    bool ContentImage(out string imageurl)
+                    // While not ended
+                    while (true)
                     {
-                        // Content is image link?
-                        if (values.TryGetValue("""content""", out string content) && IsImageURL(content))
+                        // Search for next meta, start
+                        int start = responsetext.IndexOf("""<meta""", pos, StringComparison.OrdinalIgnoreCase);
+                        if (start < 0)
+                            break;
+
+                        // Next end
+                        int end = responsetext.IndexOf("""/>""", start, StringComparison.OrdinalIgnoreCase);
+                        if (end <= start)
                         {
-                            // Image found
-                            imageurl = content;
-                            return true;
+                            // Trying simple close
+                            end = responsetext.IndexOf(""">""", start, StringComparison.OrdinalIgnoreCase);
+                            if (end <= start)
+                                break;
                         }
 
-                        // Not found
-                        imageurl = null;
-                        return false;
-                    }
+                        // Fetch meta values
+                        Dictionary<string, string> values = GetValues(responsetext.Substring(start + 5, end - start - 5));
 
-                    // Does have property and it is open-graph image?
-                    if (values.TryGetValue("""property""", out string property) && StringComparer.OrdinalIgnoreCase.Equals(property, """og:image"""))
+                        // Check for name or property
+                        if (values.TryGetValue("""property""", out string property) || values.TryGetValue("""name""", out property))
+                        {
+                            // Does have content?
+                            if (values.TryGetValue("""content""", out string content))
+                            {
+                                // Check property name
+                                switch (property.ToLower())
+                                {
+                                    case """og:image""":
+                                    case """twitter:image""":
+                                        {
+                                            // Content is image link?
+                                            if (IsImageURL(content))
+                                            {
+                                                // Image found
+                                                image = content;
+                                                return true;
+                                            }
+                                        }
+                                        break;
+                                }
+                            }
+                        }
+
+                        // Update next search
+                        pos = end + 1;
+                    }
+                }
+
+                // Trying script
+                {
+                    // Current position in the response
+                    int pos = 0;
+
+                    // While not ended
+                    while (true)
                     {
-                        // Content is image link?
-                        if (ContentImage(out image))
-                            return true;
-                    }
+                        // Search for next script, start
+                        int start = responsetext.IndexOf("""<script""", pos, StringComparison.OrdinalIgnoreCase);
+                        if (start < 0)
+                            break;
 
-                    // Does have name and it is twitter image?
-                    if (values.TryGetValue("""name""", out string name) && StringComparer.OrdinalIgnoreCase.Equals(name, """twitter:image"""))
-                    {
-                        // Content is image link?
-                        if (ContentImage(out image))
-                            return true;
-                    }
+                        // Search for script declaration end
+                        int starte = responsetext.IndexOf('>', start + 7);
+                        if (starte <= start)
+                            break;
 
-                    // Update next search
-                    pos = end + 2;
+                        // Next end
+                        int end = responsetext.IndexOf("""</script>""", starte, StringComparison.OrdinalIgnoreCase);
+                        if (end <= start)
+                            break;
+
+                        // Get the script
+                        string script = responsetext.Substring(starte + 1, end - starte - 1);
+
+                        // Current position in the script
+                        int scriptpos = 0;
+
+                        // While not ended
+                        while (true)
+                        {
+                            // Search for next URL, start
+                            int imgstart = script.IndexOf("\"http", scriptpos, StringComparison.OrdinalIgnoreCase);
+                            if (imgstart < 0)
+                                break;
+
+                            // Search for end
+                            int imgend = script.IndexOf('"', imgstart + 5);
+                            if (imgend <= imgstart)
+                                break;
+
+                            // It's a image URL?
+                            string imgurl = script.Substring(imgstart + 1, imgend - imgstart - 1);
+                            if (IsImageURL(imgurl))
+                            {
+                                // Found
+                                image = imgurl;
+                                return true;
+                            }
+
+                            // Update next script search
+                            scriptpos = imgend + 1;
+                        }
+
+                        // Update next search
+                        pos = end + 9;
+                    }
                 }
             }
 
