@@ -137,7 +137,7 @@ namespace Hardmob
                                         {
                                             // Validate URL
                                             string imageurl = content.Substring(imgsourcestart + 5, imgsourcesend - imgsourcestart - 5);
-                                            if (IsImageURL(imageurl))
+                                            if (IsFullURL(imageurl) && IsImageURL(imageurl))
                                             {
                                                 // Image found
                                                 promo.Image = imageurl;
@@ -453,35 +453,31 @@ namespace Hardmob
         }
 
         /// <summary>
-        /// Check if URL seems to be image
+        /// Check if URL (partial or full) seems to be image
         /// </summary>
         private static bool IsImageURL(string url)
         {
-            // Full HTTP?
-            if (IsFullURL(url))
+            // Remove any extra url
+            int extra = url.IndexOf('?');
+            if (extra > 0)
+                url = url.Substring(0, extra);
+
+            // Check for extension
+            int n = url.LastIndexOf('.');
+            if (n > 0)
             {
-                // Remove any extra url
-                int extra = url.IndexOf('?');
-                if (extra > 0)
-                    url = url.Substring(0, extra);
+                // Get extension
+                string extension = url.Substring(n + 1);
 
-                // Check for extension
-                int n = url.LastIndexOf('.');
-                if (n > 0)
+                // Check extension
+                switch (extension.ToUpper())
                 {
-                    // Get extension
-                    string extension = url.Substring(n + 1);
-
-                    // Check extension
-                    switch (extension.ToUpper())
-                    {
-                        // Image extensions
-                        case "PNG":
-                        case "JPG":
-                        case "JPEG":
-                        case "WEBP":
-                            return true;
-                    }
+                    // Image extensions
+                    case "PNG":
+                    case "JPG":
+                    case "JPEG":
+                    case "WEBP":
+                        return true;
                 }
             }
 
@@ -517,14 +513,9 @@ namespace Hardmob
                             break;
 
                         // Next end
-                        int end = responsetext.IndexOf("""/>""", start, StringComparison.OrdinalIgnoreCase);
+                        int end = responsetext.IndexOf(""">""", start, StringComparison.OrdinalIgnoreCase);
                         if (end <= start)
-                        {
-                            // Trying simple close
-                            end = responsetext.IndexOf(""">""", start, StringComparison.OrdinalIgnoreCase);
-                            if (end <= start)
-                                break;
-                        }
+                            break;
 
                         // Fetch meta values
                         Dictionary<string, string> values = GetValues(responsetext.Substring(start + 5, end - start - 5));
@@ -538,16 +529,13 @@ namespace Hardmob
                                 // Check property name
                                 switch (property.ToLower())
                                 {
+                                    // Image info
                                     case """og:image""":
                                     case """twitter:image""":
                                         {
-                                            // Content is full link?
-                                            if (IsFullURL(content))
-                                            {
-                                                // Image found
-                                                image = content;
+                                            // Try parse to full URL
+                                            if (TryParseFullURL(url, content, out image))
                                                 return true;
-                                            }
                                         }
                                         break;
                                 }
@@ -605,9 +593,13 @@ namespace Hardmob
                             string imgurl = script.Substring(imgstart + 1, imgend - imgstart - 1);
                             if (IsImageURL(imgurl))
                             {
-                                // Found
-                                image = imgurl;
-                                return true;
+                                // Check for full URL
+                                if (IsFullURL(imgurl))
+                                {
+                                    // Image found
+                                    image = imgurl;
+                                    return true;
+                                }
                             }
 
                             // Update next script search
@@ -628,6 +620,36 @@ namespace Hardmob
 
             // Image not found
             image = null;
+            return false;
+        }
+
+        /// <summary>
+        /// Try parse to complete URL
+        /// </summary>
+        private static bool TryParseFullURL(string @base, string input, out string url)
+        {
+            // Is already full?
+            if (IsFullURL(input))
+            {
+                // Nothing to do
+                url = input;
+                return true;
+            }
+
+            // Try create prefix url
+            if (Uri.TryCreate(@base, UriKind.Absolute, out Uri prefix))
+            {
+                // Try join both url
+                if (Uri.TryCreate(prefix, input, out Uri output))
+                {
+                    // Completed
+                    url = output.ToString();
+                    return true;
+                }
+            }
+
+            // Not complete
+            url = null;
             return false;
         }
         #endregion
