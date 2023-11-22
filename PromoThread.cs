@@ -31,6 +31,11 @@ namespace Hardmob
         public string Extra;
 
         /// <summary>
+        /// Thread ID
+        /// </summary>
+        public long ID;
+
+        /// <summary>
         /// Image URL, may be null
         /// </summary>
         public string Image;
@@ -55,7 +60,7 @@ namespace Hardmob
         /// <summary>
         /// Try extract promo info from raw HTML
         /// </summary>
-        public static bool TryParse(string input, string url, out PromoThread promo)
+        public static bool TryParse(string input, long id, string url, out PromoThread promo)
         {
             // Check input
             if (input != null)
@@ -72,6 +77,7 @@ namespace Hardmob
                         promo = new();
                         promo.Title = input.Substring(titlestart + 7, titleend - titlestart - 7).Trim();
                         promo.URL = url;
+                        promo.ID = id;
 
                         // Get div content
                         string content = GetContentDiv(input);
@@ -97,7 +103,7 @@ namespace Hardmob
 
                                     // Validate link
                                     string link = content.Substring(linkstart + 6, linkend - linkstart - 6);
-                                    if (IsFullURL(link))
+                                    if (IsFullURL(link) && !IsImageURL(link))
                                     {
                                         // Link found
                                         promo.Link = link;

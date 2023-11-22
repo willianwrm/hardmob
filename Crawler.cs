@@ -77,6 +77,16 @@ namespace Hardmob
         private const int PROMO_FORUM_ID = 407;
 
         /// <summary>
+        /// Limit size for message in sendMessage command
+        /// </summary>
+        private const int SEND_MESSAGE_TEXT_LENGTH = 4096;
+
+        /// <summary>
+        /// Limit size for caption in sendPhoto command
+        /// </summary>
+        private const int SEND_PHOTO_CAPTION_LENGTH = 1024;
+
+        /// <summary>
         /// Server host address
         /// </summary>
         private const string SERVER = """www.hardmob.com.br""";
@@ -95,16 +105,6 @@ namespace Hardmob
         /// Tries before log configuration key
         /// </summary>
         private const string TRIES_BEFORE_LOG_KEY = """triesbeforelog""";
-
-        /// <summary>
-        /// Limit size for caption in sendPhoto command
-        /// </summary>
-        private const int SEND_PHOTO_CAPTION_LENGTH = 1024;
-
-        /// <summary>
-        /// Limit size for message in sendMessage command
-        /// </summary>
-        private const int SEND_MESSAGE_TEXT_LENGTH = 4096;
 
         /// <summary>
         /// Suffix for thread ID
@@ -388,7 +388,7 @@ namespace Hardmob
                                 else if (status == ThreadStatus.Public)
                                 {
                                     // Parse the thread
-                                    if (PromoThread.TryParse(threadtext, $"{BASE_URL}{THREADS_URL}/{this._NextThread}", out PromoThread thread))
+                                    if (PromoThread.TryParse(threadtext, this._NextThread, $"{BASE_URL}{THREADS_URL}/{this._NextThread}", out PromoThread thread))
                                     {
                                         // Check if it's a promo thread
                                         if (this.ThreadsID().Contains(this._NextThread))
@@ -408,11 +408,11 @@ namespace Hardmob
                                 // Unknown
                                 else
                                     throw new NotImplementedException();
+
+                                // Reset exception count
+                                exceptions = 0;
                             }
                         }
-
-                        // Reset exception count
-                        exceptions = 0;
 
                         // Next thread ID changed since last save?
                         if (lastsavestate != this._NextThread)
@@ -436,13 +436,25 @@ namespace Hardmob
                             ex.Log();
 
                             // Notify bot about it
-                            this._Bot.SendMessage($"<b>Server exception</b>\r\n<b>Message:</b> {WebUtility.HtmlEncode(ex.Message)}\r\n<b>Type:</b> {WebUtility.HtmlEncode(ex.GetType().FullName)}", TelegramParseModes.HTML, false);
+                            this._Bot.SendMessage($"<b>Server exception</b>\r\n<b>Message:</b> {WebUtility.HtmlEncode(ex.Message)}\r\n<b>Type:</b> {WebUtility.HtmlEncode(ex.GetType().FullName)}", TelegramParseModes.HTML);
+                        }
+
+                        // Next thread ID changed since last save?
+                        if (lastsavestate != this._NextThread)
+                        {
+                            // Save current state
+                            this.SaveState();
+                            lastsavestate = this._NextThread;
                         }
                     }
 
                     // Wait next pool
                     this._ActiveWait.WaitOne(this._PoolInterval);
                 }
+
+                // Save current state
+                if (lastsavestate != this._NextThread)
+                    this.SaveState();
             }
 
             // Ignore abort exceptions
@@ -464,7 +476,7 @@ namespace Hardmob
             if (this.GetThread(id, out string threadtext) == ThreadStatus.Public)
             {
                 // Parse data and process
-                if (PromoThread.TryParse(threadtext, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread thread))
+                if (PromoThread.TryParse(threadtext, id, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread thread))
                     this.ProcessThread(thread);
 
                 // Debug
@@ -523,19 +535,20 @@ namespace Hardmob
                     caption = caption.Substring(0, caption.Length - (parsed.Length - SEND_PHOTO_CAPTION_LENGTH));
 
                 // Send as photo
-                if (this._Bot.TrySendPhoto(thread.Image, caption, TelegramParseModes.HTML))
-                    return;
+                this._Bot.SendPhoto(thread.Image, caption, TelegramParseModes.HTML);
             }
+            else
+            {
+                // Prepare text message
+                string text = output.ToString();
 
-            // Prepare text message
-            string text = output.ToString();
+                // Limiting the length
+                if (parsed.Length > SEND_MESSAGE_TEXT_LENGTH)
+                    text = text.Substring(0, text.Length - (parsed.Length - SEND_MESSAGE_TEXT_LENGTH));
 
-            // Limiting the length
-            if (parsed.Length > SEND_MESSAGE_TEXT_LENGTH)
-                text = text.Substring(0, text.Length - (parsed.Length - SEND_MESSAGE_TEXT_LENGTH));
-
-            // Send as message
-            this._Bot.SendMessage(text, TelegramParseModes.HTML, false);
+                // Send as message
+                this._Bot.SendMessage(text, TelegramParseModes.HTML);
+            }
         }
 
         /// <summary>

@@ -37,6 +37,21 @@ namespace Hardmob
         private const string JSON_CONTENT_TYPE = """application/json;charset=utf-8""";
 
         /// <summary>
+        /// Maximum size for file photo size, in bytes
+        /// </summary>
+        private const int MAXIMUM_PHOTO_FILE_SIZE = 10 * 1000 * 1000;
+
+        /// <summary>
+        /// Maximum size for photo size, in pixels
+        /// </summary>
+        private const int MAXIMUM_PHOTO_SIZE = 2048;
+
+        /// <summary>
+        /// Maximum 
+        /// </summary>
+        private const int MAXIMUM_PHOTO_TRIES = 3;
+
+        /// <summary>
         /// Queue path key
         /// </summary>
         private const string QUEUE_PATH_KEY = """queue""";
@@ -44,7 +59,7 @@ namespace Hardmob
         /// <summary>
         /// Retry sending interval, in milliseconds
         /// </summary>
-        private const int RETRY_INTERVAL = 15 * 1000;
+        private const int RETRY_INTERVAL = 5 * 1000;
 
         /// <summary>
         /// Telegram API address
@@ -204,7 +219,7 @@ namespace Hardmob
         /// <param name="mode">Parse mode</param>
         /// <exception cref="ArgumentNullException"><paramref name="text"/> is null</exception>
         /// <remarks>The message will be enqueued for later send if not succeeded</remarks>
-        public void SendMessage(string text, TelegramParseModes mode, bool preview)
+        public void SendMessage(string text, TelegramParseModes mode)
         {
             // Validate input
             if (text == null)
@@ -213,8 +228,74 @@ namespace Hardmob
             // Prepare the message to be sent
             JObject message = new();
             message.Add("""text""", text);
-            message.Add("""disable_web_page_preview""", !preview);
+            message.Add("""disable_web_page_preview""", true);
+            SetParseMode(message, mode);
 
+            // Send or enqueue
+            this.SendOrEnqueue(message);
+        }
+
+        /// <summary>
+        /// Send photo by bot
+        /// </summary>
+        /// <param name="photoUrl">Photo full URL</param>
+        /// <param name="caption">Text with the photo</param>
+        /// <param name="mode"><paramref name="caption"/> parse mode</param>
+        /// <remarks>The photo will be enqueued for later send if not succeeded, will send as message if error persist</remarks>
+        public void SendPhoto(string photoUrl, string caption, TelegramParseModes mode)
+        {
+            // Validate input
+            if (photoUrl == null)
+                throw new ArgumentNullException(nameof(photoUrl));
+
+            // Prepare the message to be sent
+            JObject message = new();
+            message.Add("""photo""", photoUrl);
+            if (!string.IsNullOrEmpty(caption))
+                message.Add("""caption""", caption);
+            SetParseMode(message, mode);
+
+            // Send or enqueue
+            this.SendOrEnqueue(message);
+        }
+        #endregion
+
+        #region Private
+        /// <summary>
+        /// Check the Telegram server result, throws exception if fail
+        /// </summary>
+        private static void CheckTelegramResponse(HttpWebRequest connection)
+        {
+            try
+            {
+                // Gets the response
+                using WebResponse webresponse = connection.GetResponse();
+                string responsetext = webresponse.GetResponseText();
+
+                // Check if it's all ok
+                JObject json = JObject.Parse(responsetext);
+                if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
+                    throw new WebException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}{Environment.NewLine}{json.ToString(Formatting.None)}", WebExceptionStatus.UnknownError);
+            }
+
+            // Web exceptions
+            catch (WebException wex)
+            {
+                // Is there a response?
+                string errortext = wex.Response?.GetResponseText();
+                if (errortext != null)
+                    throw new WebException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {wex.Message}{Environment.NewLine}{errortext}", wex, wex.Status, wex.Response);
+
+                // Nothing to do
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Update the message for parse mode
+        /// </summary>
+        private static void SetParseMode(JObject message, TelegramParseModes mode)
+        {
             // Check mode
             switch (mode)
             {
@@ -223,74 +304,50 @@ namespace Hardmob
                 case TelegramParseModes.MarkdownV2:
                     message.Add("""parse_mode""", mode.ToString());
                     break;
-            }
 
+                // No parse
+                case TelegramParseModes.Text:
+                    message.Remove("""parse_mode""");
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Try to load message from file
+        /// </summary>
+        private static bool TryLoadMessage(string file, out JObject message)
+        {
             try
             {
-                // Send the message
-                this.SendInternal(message);
+                // Load message
+                message = JObject.Parse(File.ReadAllText(file));
+                return true;
             }
 
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
 
-            // Other exceptions
-            catch (Exception ex)
+            // Unable to load file
+            catch
             {
-                // Add to queue to be send later
-                this.EnqueueMessage(message);
-
-                // Log exception
-                ex.Log();
-            }
-        }
-
-        /// <summary>
-        /// Try send as photo
-        /// </summary>
-        public bool TrySendPhoto(string photo, string caption, TelegramParseModes mode)
-        {
-            // Validate input
-            if (photo != null && caption != null)
-            {
-                // Prepare the message to be sent
-                JObject message = new();
-                message.Add("""photo""", photo);
-                message.Add("""caption""", caption);
-                message.Add("""disable_web_page_preview""", true);
-
-                // Check mode
-                switch (mode)
-                {
-                    // Parse enabled
-                    case TelegramParseModes.HTML:
-                    case TelegramParseModes.MarkdownV2:
-                        message.Add("""parse_mode""", mode.ToString());
-                        break;
-                }
-
                 try
                 {
-                    // Send the message
-                    this.SendInternal(message);
-
-                    // Photo sent
-                    return true;
+                    // Delete file
+                    File.Delete(file);
                 }
 
                 // Throws abort exceptions
                 catch (ThreadAbortException) { throw; }
 
-                // Try sending data directly
-                catch { return this.TrySendPhotoAsData(photo, caption, mode); }
+                // Ignore further exceptions
+                catch {; }
             }
 
-            // Not sent
+            // Unable to load
+            message = null;
             return false;
         }
-        #endregion
 
-        #region Private
         /// <summary>
         /// Enqueue message to be send later, will save it as file
         /// </summary>
@@ -314,52 +371,6 @@ namespace Hardmob
         }
 
         /// <summary>
-        /// Prepare message to be sent
-        /// </summary>
-        private byte[] PrepareMessage(JObject message)
-        {
-            // Update to current chat id
-            if (message.ContainsKey("""chat_id"""))
-                message["""chat_id"""] = this._Chat;
-            else
-                message.Add("""chat_id""", this._Chat);
-
-            // Prepare full message
-            string rawmessage = message.ToString(Formatting.None);
-
-            // Encode to UTF-8
-            return Encoding.UTF8.GetBytes(rawmessage);
-        }
-
-        /// <summary>
-        /// Prepare message to be sent
-        /// </summary>
-        private byte[] PrepareMessage(JObject message, TelegramParseModes mode)
-        {
-            // Update to current chat id
-            if (message.ContainsKey("""chat_id"""))
-                message["""chat_id"""] = this._Chat;
-            else
-                message.Add("""chat_id""", this._Chat);
-
-            // Check mode
-            switch (mode)
-            {
-                // Parse enabled
-                case TelegramParseModes.HTML:
-                case TelegramParseModes.MarkdownV2:
-                    message.Add("""parse_mode""", mode.ToString());
-                    break;
-            }
-
-            // Prepare full message
-            string rawmessage = message.ToString(Formatting.None);
-
-            // Encode to UTF-8
-            return Encoding.UTF8.GetBytes(rawmessage);
-        }
-
-        /// <summary>
         /// Sending queued messages
         /// </summary>
         private void QueueSender()
@@ -372,36 +383,69 @@ namespace Hardmob
                 // While bot is active
                 while (this._Active)
                 {
-                    // Get next queued message, does not remove from queue yet
-                    if (this._Queued.TryPeek(out string file))
+                    // Get next queued message
+                    if (this._Queued.TryDequeue(out string file))
                     {
-                        try
+                        // Fetch message data
+                        if (TryLoadMessage(file, out JObject message))
                         {
-                            // File does exists?
-                            if (File.Exists(file))
+                            // Update the message
+                            this.UpdateMessage(message);
+
+                            // Exception count
+                            int exceptions = 0;
+
+                            // While not sent
+                            while (this._Active)
                             {
-                                // Read message from file
-                                JObject message = JObject.Parse(File.ReadAllText(file));
+                                try
+                                {
+                                    // Maximum photo exception reached?
+                                    if (exceptions > 0 && exceptions % MAXIMUM_PHOTO_TRIES == 0 && message.ContainsKey("""photo"""))
+                                    {
+                                        // Clone message
+                                        JObject textmessage = new(message);
 
-                                // Send message
-                                this.SendInternal(message);
+                                        // Remove the photo
+                                        textmessage.Remove("""photo""");
 
-                                // Remove file
-                                File.Delete(file);
+                                        // Does have caption and not text?
+                                        if (textmessage.ContainsKey("""caption""") && !textmessage.ContainsKey("""text"""))
+                                        {
+                                            // Translate caption to text
+                                            textmessage.Add("""text""", (string)textmessage["""caption"""]);
+                                            textmessage.Remove("""caption""");
+                                        }
+
+                                        // Remove any link preview
+                                        if (!textmessage.ContainsKey("""disable_web_page_preview"""))
+                                            textmessage.Add("""disable_web_page_preview""", true);
+
+                                        // Send message
+                                        this.SendInternal(textmessage);
+                                    }
+                                    else
+                                    {
+                                        // Send message
+                                        this.SendInternal(message);
+                                    }
+
+                                    // Remove file
+                                    File.Delete(file);
+
+                                    // Message sent
+                                    break;
+                                }
+
+                                // Throws abort exceptions
+                                catch (ThreadAbortException) { throw; }
+
+                                // Other exceptions
+                                catch { exceptions++; }
+
+                                // Wait for some time before trying again
+                                this._ActiveWait.WaitOne(RETRY_INTERVAL);
                             }
-
-                            // Remove from queue
-                            this._Queued.TryDequeue(out _);
-                        }
-
-                        // Throws abort exceptions
-                        catch (ThreadAbortException) { throw; }
-
-                        // Ignore other exceptions
-                        catch
-                        {
-                            // But wait for some time before trying again
-                            this._ActiveWait.WaitOne(RETRY_INTERVAL);
                         }
                     }
                     else
@@ -424,13 +468,32 @@ namespace Hardmob
         /// </summary>
         private void SendInternal(JObject message)
         {
-            // Prepare message to be sent
-            byte[] data = this.PrepareMessage(message);
+            // Sending photo?
+            if (message.ContainsKey("""photo"""))
+            {
+                // Try send direct as URL, send as multi-part data if fail
+                if (!this.TrySendPhoto(message))
+                    this.SendPhotoMultipart(message);
+            }
+            else
+            {
+                // Send message
+                this.SendJson(message, TELEGRAM_SEND_MESSAGE_COMMAND);
+            }
+        }
 
-            // Telegram command
-            string command = message.ContainsKey("""photo""") ? TELEGRAM_SEND_PHOTO_COMMAND : TELEGRAM_SEND_MESSAGE_COMMAND;
+        /// <summary>
+        /// Send JSON as command
+        /// </summary>
+        private void SendJson(JObject message, string command)
+        {
+            // Prepare full message
+            string rawmessage = message.ToString(Formatting.None);
 
-            // Initializing HTTPS connection
+            // Encode to UTF-8
+            byte[] data = Encoding.UTF8.GetBytes(rawmessage);
+
+            // Initializing connection
             HttpWebRequest connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", """POST""");
             connection.ContentLength = data.Length;
             connection.ContentType = JSON_CONTENT_TYPE;
@@ -440,21 +503,155 @@ namespace Hardmob
             using (Stream connectionstream = connection.GetRequestStream())
                 connectionstream.Write(data, 0, data.Length);
 
-            // Gets the response
-            using WebResponse webresponse = connection.GetResponse();
-            string responsetext = webresponse.GetResponseText();
-
-            // Check if it's all ok
-            JObject json = JObject.Parse(responsetext);
-            if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
-                throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}");
+            // Check result
+            CheckTelegramResponse(connection);
         }
 
         /// <summary>
-        /// Send photo as multi-part POST
+        /// Try send the message, will enqueue for later if fail
         /// </summary>
-        private void SendPhoto(byte[] raw, string mimetype, string caption, TelegramParseModes mode)
+        private void SendOrEnqueue(JObject message)
         {
+            // Update with current configuration
+            this.UpdateMessage(message);
+
+            try
+            {
+                // Send the message
+                this.SendInternal(message);
+            }
+
+            // Throws abort exceptions
+            catch (ThreadAbortException) { throw; }
+
+            // Other exceptions
+            catch (Exception ex)
+            {
+                // Add to queue to be send later
+                this.EnqueueMessage(message);
+
+                // Log exception
+                ex.Log();
+            }
+        }
+
+        /// <summary>
+        /// Send photo as multi-part data
+        /// </summary>
+        private void SendPhotoMultipart(JObject message)
+        {
+            // Download image data
+            HttpWebRequest connection = Core.CreateWebRequest((string)message["""photo"""]);
+            using MemoryStream imagestream = new();
+            {
+                // Read response to stream
+                using WebResponse webresponse = connection.GetResponse();
+                using Stream webstream = webresponse.GetResponseStream();
+                webstream.CopyTo(imagestream);
+                imagestream.Position = 0;
+            }
+
+            // Image data to be send
+            byte[] photodata;
+            string phototype;
+
+            // Read the image
+            using MagickImage image = new(imagestream);
+
+            // Check image size
+            if (image.Height > MAXIMUM_PHOTO_SIZE || image.Width > MAXIMUM_PHOTO_SIZE)
+            {
+                // Larger width?
+                if (image.Width > MAXIMUM_PHOTO_SIZE)
+                {
+                    // Resize with maximum width
+                    image.Resize(MAXIMUM_PHOTO_SIZE, (int)Math.Ceiling(((double)MAXIMUM_PHOTO_SIZE * image.Height) / image.Width));
+                }
+                else
+                {
+                    // Resize with maximum height
+                    image.Resize((int)Math.Ceiling(((double)MAXIMUM_PHOTO_SIZE * image.Width) / image.Height), MAXIMUM_PHOTO_SIZE);
+                }
+
+                // Force JPG format
+                image.Format = MagickFormat.Jpg;
+                image.Quality = 90;
+
+                // Convert to JPG
+                using MemoryStream jpegstream = new();
+                image.Write(jpegstream);
+
+                // Get data
+                photodata = jpegstream.ToArray();
+                phototype = """image/jpg""";
+            }
+            else
+            {
+                // Check the real format
+                switch (image.Format)
+                {
+                    // JPEG
+                    case MagickFormat.Jpg:
+                    case MagickFormat.Jpeg:
+                        photodata = imagestream.ToArray();
+                        phototype = """image/jpg""";
+                        break;
+
+                    // PNG
+                    case MagickFormat.Png:
+                        photodata = imagestream.ToArray();
+                        phototype = """image/png""";
+                        break;
+
+                    // Other formats
+                    default:
+                        {
+                            // Force JPG format
+                            image.Format = MagickFormat.Jpg;
+                            image.Quality = 90;
+
+                            // Convert to JPG
+                            using MemoryStream jpegstream = new();
+                            image.Write(jpegstream);
+
+                            // Get data
+                            photodata = jpegstream.ToArray();
+                            phototype = """image/jpg""";
+                        }
+                        break;
+                }
+            }
+
+            // But image data exceeds maximum file size?
+            if (photodata.Length > MAXIMUM_PHOTO_FILE_SIZE)
+            {
+                // Image quality
+                int quality = 100;
+
+                // Force JPG format
+                image.Format = MagickFormat.Jpg;
+                phototype = """image/png""";
+
+                // While not small enough
+                while (photodata.Length > MAXIMUM_PHOTO_FILE_SIZE)
+                {
+                    // Decrements quality
+                    quality -= 10;
+                    image.Quality = quality;
+
+                    // Convert to JPG
+                    using MemoryStream jpegstream = new();
+                    image.Write(jpegstream);
+
+                    // Get data
+                    photodata = jpegstream.ToArray();
+
+                    // Force exit if quality is below limit
+                    if (quality <= 1)
+                        break;
+                }
+            }
+
             // Boundary separador
             string boundary = $"boundary{Guid.NewGuid():N}";
             byte[] boundarydata = Encoding.ASCII.GetBytes($"\r\n--{boundary}\r\n");
@@ -463,7 +660,7 @@ namespace Hardmob
             // Multi part stream
             using MemoryStream multipart = new();
 
-            // Writes form-data
+            // Write forma-data
             void WriteFormData(string key, string value)
             {
                 // Writes the boundary
@@ -479,71 +676,56 @@ namespace Hardmob
                 multipart.Write(valuedata, 0, valuedata.Length);
             }
 
-            // Writes form-data values
-            WriteFormData("""caption""", caption);
-            WriteFormData("""chat_id""", this._Chat.ToString());
-
-            // Check mode
-            switch (mode)
+            // For each value in message
+            foreach (var pair in message)
             {
-                // Parse enabled
-                case TelegramParseModes.HTML:
-                case TelegramParseModes.MarkdownV2:
-                    WriteFormData("""parse_mode""", mode.ToString());
-                    break;
-            }
+                // Check key
+                switch (pair.Key)
+                {
+                    // Photo data?
+                    case """photo""":
+                        {
+                            // Writes the boundary
+                            multipart.Write(boundarydata, 0, boundarydata.Length);
 
-            // Writing the photo bytes
-            {
-                // Writes the boundary
-                multipart.Write(boundarydata, 0, boundarydata.Length);
+                            // Writes header
+                            string header = $"Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\nContent-Type: {phototype}\r\n\r\n";
+                            byte[] headerdata = Encoding.UTF8.GetBytes(header);
+                            multipart.Write(headerdata, 0, headerdata.Length);
 
-                // Writes header
-                string header = $"Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\nContent-Type: {mimetype}\r\n\r\n";
-                byte[] headerdata = Encoding.UTF8.GetBytes(header);
-                multipart.Write(headerdata, 0, headerdata.Length);
+                            // Writes the photo file
+                            multipart.Write(photodata, 0, photodata.Length);
+                        }
+                        break;
 
-                // Writes the file
-                multipart.Write(raw, 0, raw.Length);
+                    // Text? Will be translated as caption
+                    case """text""":
+                        WriteFormData("""caption""", (string)pair.Value);
+                        break;
+
+                    // Others
+                    default:
+                        WriteFormData(pair.Key, (string)pair.Value);
+                        break;
+                }
             }
 
             // Finalize with end boundary
             multipart.Write(boundaryenddata, 0, boundaryenddata.Length);
             multipart.Position = 0;
 
-            // Initializing HTTPS connection
-            HttpWebRequest connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", """POST""");
+            // Initializing connection
+            connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", """POST""");
             connection.ContentLength = multipart.Length;
             connection.ContentType = $"multipart/form-data; boundary=\"{boundary}\"";
             connection.KeepAlive = false;
 
-            try
-            {
-                // Connects and post data
-                using (Stream connectionstream = connection.GetRequestStream())
-                    multipart.CopyTo(connectionstream);
+            // Connects and post data
+            using (Stream connectionstream = connection.GetRequestStream())
+                multipart.CopyTo(connectionstream);
 
-                // Gets the response
-                using WebResponse webresponse = connection.GetResponse();
-                string responsetext = webresponse.GetResponseText();
-
-                // Check if it's all ok
-                JObject json = JObject.Parse(responsetext);
-                if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
-                    throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}{Environment.NewLine}{json.ToString(Formatting.None)}");
-            }
-
-            // Web exceptions
-            catch (WebException wex)
-            {
-                // Is there a response?
-                string errortext = wex.Response?.GetResponseText();
-                if (errortext != null)
-                    throw new InvalidDataException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {wex.Message}{Environment.NewLine}{errortext}");
-
-                // Nothing to do
-                throw;
-            }
+            // Check result
+            CheckTelegramResponse(connection);
         }
 
         /// <summary>
@@ -572,66 +754,17 @@ namespace Hardmob
         }
 
         /// <summary>
-        /// Try download and send photo as multi-part POST
+        /// Try send photo as URL
         /// </summary>
-        private bool TrySendPhotoAsData(string photo, string caption, TelegramParseModes mode)
+        private bool TrySendPhoto(JObject message)
         {
             try
             {
-                // Download image data
-                HttpWebRequest connection = Core.CreateWebRequest(photo);
-                MemoryStream imagestream = new();
-                {
-                    // Read response to stream
-                    using WebResponse webresponse = connection.GetResponse();
-                    using Stream webstream = webresponse.GetResponseStream();
-                    webstream.CopyTo(imagestream);
-                    imagestream.Position = 0;
-                }
+                // Send photo
+                this.SendJson(message, TELEGRAM_SEND_PHOTO_COMMAND);
 
-                // Image data to be send
-                byte[] imagedata;
-                string mimetype;
-
-                // Read the image
-                using MagickImage image = new(imagestream);
-
-                // Check the real format of image
-                switch (image.Format)
-                {
-                    // JPEG
-                    case MagickFormat.Jpg:
-                    case MagickFormat.Jpeg:
-                        imagedata = imagestream.ToArray();
-                        mimetype = """image/jpg""";
-                        break;
-
-                    // PNG
-                    case MagickFormat.Png:
-                        imagedata = imagestream.ToArray();
-                        mimetype = """image/png""";
-                        break;
-
-                    // Other formats
-                    default:
-                        {
-                            // Force JPG format
-                            image.Format = MagickFormat.Jpg;
-                            image.Quality = 90;
-
-                            // Convert to JPG
-                            using MemoryStream jpegstream = new();
-                            image.Write(jpegstream);
-
-                            // Get data
-                            imagedata = jpegstream.ToArray();
-                            mimetype = """image/png""";
-                        }
-                        break;
-                }
-
-                // Send directly
-                this.SendPhoto(imagedata, mimetype, caption, mode);
+                // Photo sent
+                return true;
             }
 
             // Throws abort exceptions
@@ -642,6 +775,24 @@ namespace Hardmob
 
             // Not sent
             return false;
+        }
+
+        /// <summary>
+        /// Update the message for current configuration
+        /// </summary>
+        private void UpdateMessage(JObject message)
+        {
+            // Already contains chat-id?
+            if (message.ContainsKey("""chat_id"""))
+            {
+                // Update it
+                message["""chat_id"""] = this._Chat;
+            }
+            else
+            {
+                // Add current chat-id
+                message.Add("""chat_id""", this._Chat);
+            }
         }
         #endregion
     }
