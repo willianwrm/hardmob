@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 
 namespace Hardmob.Helpers
@@ -34,21 +35,22 @@ namespace Hardmob.Helpers
         {
             try
             {
-                // Formats the exception
-                string message = $"Exception: {exception.GetType().FullName}\r\n" +
-                                 $"Message: {exception.Message}\r\n" +
-                                 $"Stack:\r\n" +
-                                 $"{exception.StackTrace}";
+                // Exception is forum thread? Use the inner exception
+                CrawlerThreadException crawler = exception as CrawlerThreadException;
+                if (crawler != null)
+                    exception = crawler.InnerException;
 
-                // Writes to debug
-                Debug.Write(message);
+                // Building the exception
+                StringBuilder message = new();
+                message.AppendLine($"Exception: {exception.GetType().FullName}");
+                message.AppendLine($"Message: {exception.Message}");
+                if (crawler != null)
+                    message.AppendLine($"Forum thread: {crawler.ID}");
+                message.AppendLine("Stack:");
+                message.AppendLine(exception.StackTrace);
 
-                // Creates log entry if none exists
-                if (!EventLog.SourceExists(EVENT_LOG_SOURCE))
-                    EventLog.CreateEventSource(EVENT_LOG_SOURCE, EVENT_LOG_SOURCE);
-
-                // Writes exception to log
-                EventLog.WriteEntry(EVENT_LOG_SOURCE, message, EventLogEntryType.Warning);
+                // Log it
+                Log(message.ToString());
             }
 
             // Throws thread abort
@@ -82,6 +84,22 @@ namespace Hardmob.Helpers
 
             // Ignores any exception
             catch {; }
+        }
+
+        /// <summary>
+        /// Log exception message
+        /// </summary>
+        private static void Log(string message)
+        {
+            // Writes to debug
+            Debug.Write(message);
+
+            // Creates log entry if none exists
+            if (!EventLog.SourceExists(EVENT_LOG_SOURCE))
+                EventLog.CreateEventSource(EVENT_LOG_SOURCE, EVENT_LOG_SOURCE);
+
+            // Writes exception to log
+            EventLog.WriteEntry(EVENT_LOG_SOURCE, message, EventLogEntryType.Warning);
         }
         #endregion
     }

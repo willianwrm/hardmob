@@ -24,11 +24,6 @@ namespace Hardmob
         private const string BASE_URL = $"""https://{SERVER}/""";
 
         /// <summary>
-        /// Default pool full interval
-        /// </summary>
-        private const int DEFAULT_POOL_FULL_INTERVAL = 15 * 60 * 1000;
-
-        /// <summary>
         /// Default pool interval
         /// </summary>
         private const int DEFAULT_POOL_INTERVAL = 15 * 1000;
@@ -62,11 +57,6 @@ namespace Hardmob
         /// Next thread state key
         /// </summary>
         private const string NEXT_THREAD_KEY = """nextthread""";
-
-        /// <summary>
-        /// Pool full interval configuration key
-        /// </summary>
-        private const string POOL_FULL_INTERVAL_KEY = """poolfullinterval""";
 
         /// <summary>
         /// Pool interval configuration key
@@ -263,16 +253,13 @@ namespace Hardmob
                 // Initializing connection
                 HttpWebRequest connection = Core.CreateWebRequest(url);
                 connection.CachePolicy = this._Cache;
-                //connection.CookieContainer = this._Cookies;
+                connection.KeepAlive = true;
 
                 // Join cookies
                 List<string> cookies = new(this._Cookies.Count);
                 foreach (KeyValuePair<string, string> cookie in this._Cookies)
                     cookies.Add($"{cookie.Key}={cookie.Value}");
                 connection.Headers.Add("Cookie", string.Join(";", cookies));
-
-
-                connection.KeepAlive = true;
 
                 // Gets the response
                 using WebResponse webresponse = connection.GetResponse();
@@ -503,8 +490,12 @@ namespace Hardmob
         {
             try
             {
-                // Sequential exceptions
+                // Sequential exceptions and last code
                 int exceptions = 0;
+                int? previousException = null;
+
+                // Last processed ID
+                long? lastID = null;
 
                 // Last save state
                 long lastsavestate = this._NextThread;
@@ -515,6 +506,9 @@ namespace Hardmob
                 // While active
                 while (this._Active)
                 {
+                    // Reset last processed
+                    lastID = null;
+
                     try
                     {
                         // Debug
@@ -535,19 +529,39 @@ namespace Hardmob
                             // Fetching every new thread
                             for (long i = this._NextThread; i <= maximum; i++)
                             {
-                                // Process it if in forum
+                                // Check if this ID is in the forum
                                 if (ids.Contains(i))
-                                    this.ProcessThread(i);
-                            }
+                                {
+                                    try
+                                    {
+                                        // Process this ID
+                                        this.ProcessThread(i);
+                                    }
 
-                            // Update next fetch
-                            this._NextThread = Math.Max(maximum + 1, this._NextThread);
+                                    // Throw thread abortion
+                                    catch (ThreadAbortException) { throw; }
+
+                                    // Any other exception
+                                    catch (Exception ex)
+                                    {
+                                        // Add thread ID to exception
+                                        throw new CrawlerThreadException(ex, i);
+                                    }
+
+                                    // Update last processed
+                                    lastID = i;
+                                }
+                            }
                         }
                         else
                         {
                             // Debug
                             Debug.WriteLine("failed");
                         }
+
+                        // No exceptions, clear control
+                        exceptions = 0;
+                        previousException = null;
                     }
 
                     // Throw thread abortion
@@ -556,16 +570,24 @@ namespace Hardmob
                     // Other exceptions
                     catch (Exception ex)
                     {
-                        // Too many exceptions?
-                        if (this._TriesBeforeLog >= 0 && exceptions++ == this._TriesBeforeLog)
+                        // Differ from previous exception or the number of sequential exceptions is high?
+                        if (ex.HResult != previousException || exceptions++ == this._TriesBeforeLog)
                         {
                             // Register exception in log
                             ex.Log();
 
-                            // Notify bot about it
-                            this._Bot.SendMessage($"<b>Server exception</b>\r\n<b>Message:</b> {WebUtility.HtmlEncode(ex.Message)}\r\n<b>Type:</b> {WebUtility.HtmlEncode(ex.GetType().FullName)}", TelegramParseModes.HTML);
+                            // Update last exception
+                            previousException = ex.HResult;
                         }
+
+                        // Too many exceptions? Notify bot about it
+                        if (this._TriesBeforeLog >= 0 && exceptions++ == this._TriesBeforeLog)
+                            this._Bot.SendMessage($"<b>Server exception</b>\r\n<b>Message:</b> {WebUtility.HtmlEncode(ex.Message)}\r\n<b>Type:</b> {WebUtility.HtmlEncode(ex.GetType().FullName)}", TelegramParseModes.HTML);
                     }
+
+                    // Update next fetch with last processed ID
+                    if (lastID != null)
+                        this._NextThread = Math.Max(lastID.Value + 1, this._NextThread);
 
                     // Next thread ID changed since last save?
                     if (lastsavestate != this._NextThread)
