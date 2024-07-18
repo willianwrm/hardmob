@@ -1,6 +1,8 @@
 ﻿using Hardmob.Helpers;
 using IniParser.Model;
 using IniParser.Parser;
+using RestSharp;
+using System;
 using System.IO;
 using System.Net;
 using System.ServiceProcess;
@@ -10,6 +12,11 @@ namespace Hardmob
     public partial class MainService : ServiceBase
     {
         #region Constants
+        /// <summary>
+        /// Application configuration section name
+        /// </summary>
+        private const string APP_SECTION = """App""";
+
         /// <summary>
         /// Configuration file name
         /// </summary>
@@ -21,14 +28,14 @@ namespace Hardmob
         private const string CONFIGURATION_SAMPLE_FILE = """config-sample.ini""";
 
         /// <summary>
-        /// User agent configuration key
-        /// </summary>
-        private const string USER_AGENT_KEY = """useragent""";
-
-        /// <summary>
         /// Crawler configuration section name
         /// </summary>
         private const string CRAWLER_SECTION = """Crawler""";
+
+        /// <summary>
+        /// REST proxy configuration
+        /// </summary>
+        private const string REST_SECTION = """REST""";
 
         /// <summary>
         /// Time before thread abortion when stopping the service
@@ -41,9 +48,9 @@ namespace Hardmob
         private const string TELEGRAM_SECTION = """Telegram""";
 
         /// <summary>
-        /// Application configuration section name
+        /// User agent configuration key
         /// </summary>
-        private const string APP_SECTION = """App""";
+        private const string USER_AGENT_KEY = """useragent""";
         #endregion
 
         #region Variables
@@ -121,8 +128,40 @@ namespace Hardmob
             // Create telegram bot
             this._Telegram = new(ini[TELEGRAM_SECTION]);
 
+            // REST redirect, used only by crawler when fails
+            RestClientOptions redirect = null;
+
+            // Does have REST configuration?
+            if (ini.Sections.ContainsSection(REST_SECTION))
+            {
+                // Get configuration
+                KeyDataCollection restconfig = ini[REST_SECTION];
+                string address = restconfig["""address"""];
+                string user = restconfig["""user"""];
+                string password = restconfig["""password"""];
+
+                // Has address?
+                if (!string.IsNullOrWhiteSpace(address))
+                {
+                    // Create proxy
+                    WebProxy proxy = new();
+                    proxy.Address = new(address);
+
+                    // Has user? Create credentials
+                    if (!string.IsNullOrWhiteSpace(user))
+                        proxy.Credentials = new NetworkCredential(user, password);
+
+                    // Create redirect
+                    redirect = new();
+                    redirect.Proxy = proxy;
+
+                    // Accepting any certificate
+                    redirect.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+                }
+            }
+
             // Create crawler
-            this._Crawler = new(ini[CRAWLER_SECTION], this._Telegram);
+            this._Crawler = new(ini[CRAWLER_SECTION], this._Telegram, redirect);
         }
 
         /// <inheritdoc/>

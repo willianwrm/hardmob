@@ -1,6 +1,7 @@
 ﻿using Hardmob.Helpers;
 using IniParser.Model;
 using Newtonsoft.Json.Linq;
+using RestSharp;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,6 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Cache;
+using System.Net.Http;
 using System.Text;
 using System.Threading;
 
@@ -77,6 +79,16 @@ namespace Hardmob
         private const int PROMO_FORUM_ID = 407;
 
         /// <summary>
+        /// Interval between redirect tries
+        /// </summary>
+        private const int REDIRECT_RETRY_INTERVAL = 1000;
+
+        /// <summary>
+        /// Maximum time before exception with redirection
+        /// </summary>
+        private const int REDIRECT_TIME_OUT_EXCEPTION = 5 * 60 * 1000;
+
+        /// <summary>
         /// Limit size for message in sendMessage command
         /// </summary>
         private const int SEND_MESSAGE_TEXT_LENGTH = 4096;
@@ -109,7 +121,7 @@ namespace Hardmob
         /// <summary>
         /// Suffix for thread ID
         /// </summary>
-        private static readonly char[] THREAD_ID_SUFIX = new char[] { '_', '-', ' ' };
+        private static readonly char[] THREAD_ID_SUFIX = ['_', '-', ' '];
         #endregion
 
         #region Variables
@@ -131,7 +143,7 @@ namespace Hardmob
         /// <summary>
         /// Web cookies
         /// </summary>
-        private readonly CookieContainer _Cookies = new();
+        private readonly Dictionary<string, string> _Cookies = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Main thread
@@ -139,14 +151,14 @@ namespace Hardmob
         private readonly Thread _MainThread;
 
         /// <summary>
-        /// Maximum time before a full check in milliseconds
-        /// </summary>
-        private readonly int _PoolFullInterval;
-
-        /// <summary>
         /// Interval between checks in milliseconds
         /// </summary>
         private readonly int _PoolInterval;
+
+        /// <summary>
+        /// Options for REST redirect
+        /// </summary>
+        private readonly RestClientOptions _RedirectOptions;
 
         /// <summary>
         /// File to read and save state data
@@ -167,22 +179,27 @@ namespace Hardmob
         /// Next thread to fetch
         /// </summary>
         private long _NextThread;
+
+        /// <summary>
+        /// Redirecting request via REST
+        /// </summary>
+        private RestClient _Redirect;
         #endregion
 
         #region Constructors
         /// <summary>
         /// Create and start new crawler
         /// </summary>
-        public Crawler(KeyDataCollection configurations, TelegramBot bot)
+        public Crawler(KeyDataCollection configurations, TelegramBot bot, RestClientOptions redirect = null)
         {
             // Check configuration
             if (configurations == null)
                 throw new ArgumentNullException(nameof(configurations));
             this._Bot = bot ?? throw new ArgumentNullException(nameof(bot));
+            this._RedirectOptions = redirect;
 
             // Fetch the configurations
             this._PoolInterval = configurations.ContainsKey(POOL_INTERVAL_KEY) && int.TryParse(configurations[POOL_INTERVAL_KEY], out int poolinterval) ? poolinterval : DEFAULT_POOL_INTERVAL;
-            this._PoolFullInterval = configurations.ContainsKey(POOL_FULL_INTERVAL_KEY) && int.TryParse(configurations[POOL_FULL_INTERVAL_KEY], out int poolfullinterval) ? poolfullinterval : DEFAULT_POOL_FULL_INTERVAL;
             this._TriesBeforeLog = configurations.ContainsKey(TRIES_BEFORE_LOG_KEY) && int.TryParse(configurations[TRIES_BEFORE_LOG_KEY], out int triesbeforelog) ? triesbeforelog : DEFAULT_TRIES_BEFORE_LOG;
             this._StateFile = Path.GetFullPath(Path.Combine(Core.AppDir, configurations.ContainsKey(STATE_FILE_KEY) && !string.IsNullOrWhiteSpace(configurations[STATE_FILE_KEY]) ? configurations[STATE_FILE_KEY] : DEFAULT_STATE_FILE));
 
@@ -191,10 +208,6 @@ namespace Hardmob
                 this._PoolInterval = MINIMUM_POOL_INTERVAL;
             if (this._PoolInterval > MAXIMUM_POOL_INTERVAL)
                 this._PoolInterval = MAXIMUM_POOL_INTERVAL;
-            if (this._PoolFullInterval < MINIMUM_POOL_INTERVAL)
-                this._PoolFullInterval = MINIMUM_POOL_INTERVAL;
-            if (this._PoolFullInterval > MAXIMUM_POOL_INTERVAL)
-                this._PoolFullInterval = MAXIMUM_POOL_INTERVAL;
 
             // Check for state file
             if (File.Exists(this._StateFile))
@@ -241,18 +254,195 @@ namespace Hardmob
 
         #region Private
         /// <summary>
-        /// Create new connection to host
+        /// Get HTTP data
         /// </summary>
-        private HttpWebRequest CreateConnection(string url)
+        private string GetData(string url)
         {
-            // Initializing connection
-            HttpWebRequest connection = Core.CreateWebRequest(url);
-            connection.CachePolicy = this._Cache;
-            connection.CookieContainer = this._Cookies;
-            connection.KeepAlive = true;
+            try
+            {
+                // Initializing connection
+                HttpWebRequest connection = Core.CreateWebRequest(url);
+                connection.CachePolicy = this._Cache;
+                //connection.CookieContainer = this._Cookies;
 
-            // Return connection
-            return connection;
+                // Join cookies
+                List<string> cookies = new(this._Cookies.Count);
+                foreach (KeyValuePair<string, string> cookie in this._Cookies)
+                    cookies.Add($"{cookie.Key}={cookie.Value}");
+                connection.Headers.Add("Cookie", string.Join(";", cookies));
+
+
+                connection.KeepAlive = true;
+
+                // Gets the response
+                using WebResponse webresponse = connection.GetResponse();
+                return webresponse.GetResponseText();
+            }
+
+            // HTTP exceptions
+            catch (WebException wex)
+            {
+                // Does have a response?
+                if (wex.Response is HttpWebResponse httpresponse)
+                {
+                    // Check for the result
+                    switch (httpresponse.StatusCode)
+                    {
+                        // Access forbidden
+                        case HttpStatusCode.Forbidden:
+                            {
+                                // It's cloud-flare redirect?
+                                if (httpresponse.GetResponseText()?.IndexOf("history.replaceState", StringComparison.OrdinalIgnoreCase) > 0)
+                                {
+                                    // REST redirect enabled?
+                                    if (this._RedirectOptions != null)
+                                        return this.GetDataRedirect(url);
+
+                                    // Not accessible
+                                    throw;
+                                }
+                            }
+                            break;
+                    }
+                }
+
+                // Nothing to do
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Get HTTP data from redirect
+        /// </summary>
+        private string GetDataRedirect(string url)
+        {
+            // Does have redirect options?
+            if (this._RedirectOptions != null)
+            {
+                // Request exception timeout
+                int timeout = Environment.TickCount;
+
+                // While not fetch
+                while (this._Active)
+                {
+                    try
+                    {
+                        // Get or create redirect cache
+                        RestClient redirect = this._Redirect;
+                        redirect ??= this._Redirect = new(this._RedirectOptions);
+
+                        // Create the request
+                        RestRequest request = new(url);
+
+                        // Get the response
+                        RestResponse response = redirect.Get(request);
+
+                        // Get HTTP data
+                        string output = response.GetResponseText();
+
+                        // Looks like it's an JSON?
+                        if (output.Length > 0 && output[0] == '{')
+                        {
+                            // Parsed result
+                            JObject jsonresult = null;
+
+                            try
+                            {
+                                // Try parse
+                                jsonresult = JObject.Parse(output);
+                            }
+
+                            // Throws abort exceptions
+                            catch (ThreadAbortException) { throw; }
+
+                            // Ignore other exceptions
+                            catch {; }
+
+                            // Result is JSON?
+                            if (jsonresult != null)
+                            {
+                                // It's a 404?
+                                if ((int?)jsonresult["""status"""] == 404)
+                                    throw new WebException("404 Not found", WebExceptionStatus.RequestProhibitedByProxy);
+                            }
+                        }
+
+                        try
+                        {
+                            // For each result header
+                            foreach (HeaderParameter header in response.Headers)
+                            {
+                                // Check if it's cookies
+                                if (header.Name.IndexOf("Set-Cookie", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    // Parsing cookies
+                                    foreach (string type in (header.Value as string).Split(';'))
+                                    {
+                                        // Has key and value?
+                                        int n = type.IndexOf('=');
+                                        if (n > 0)
+                                        {
+                                            // Get key
+                                            string key = type.Substring(0, n).ToLower().Trim();
+
+                                            // Looks like a good cookie?
+                                            if (key.StartsWith("bb", StringComparison.OrdinalIgnoreCase) || key.StartsWith("cf", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                // Get value
+                                                string value = WebUtility.HtmlDecode(type.Substring(n + 1).Trim());
+
+                                                // Add cookie
+                                                if (this._Cookies.ContainsKey(key))
+                                                    this._Cookies[key] = value;
+                                                else
+                                                    this._Cookies.Add(key, value);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Throws abort exceptions
+                        catch (ThreadAbortException) { throw; }
+
+                        // Ignore other exceptions
+                        catch {; }
+
+                        // Return data
+                        return output;
+                    }
+
+                    // HTTP exceptions
+                    catch (HttpRequestException ex)
+                    {
+                        // But it's not a request failed?
+                        if (!ex.Message.StartsWith("Request failed", StringComparison.OrdinalIgnoreCase))
+                            throw;
+
+                        // Did time-out? Force null result
+                        if ((Environment.TickCount - timeout) > REDIRECT_TIME_OUT_EXCEPTION)
+                            return null;
+                    }
+
+                    // Any other
+                    catch
+                    {
+                        // Free current redirect, it may be corrupt
+                        this._Redirect?.Dispose();
+                        this._Redirect = null;
+
+                        // Throw exception
+                        throw;
+                    }
+
+                    // Wait before continue
+                    this._ActiveWait.WaitOne(REDIRECT_RETRY_INTERVAL);
+                }
+            }
+
+            // No result
+            return null;
         }
 
         /// <summary>
@@ -262,15 +452,9 @@ namespace Hardmob
         {
             try
             {
-                // Initializing connection
-                HttpWebRequest connection = this.CreateConnection($"{BASE_URL}{THREADS_URL}/{id}");
-
-                // Gets the response
-                using WebResponse webresponse = connection.GetResponse();
-                text = webresponse.GetResponseText();
-
-                // It's look like valid
-                return ThreadStatus.Public;
+                // Get the result
+                text = this.GetData($"{BASE_URL}{THREADS_URL}/{id}");
+                return string.IsNullOrEmpty(text) ? ThreadStatus.Private : ThreadStatus.Public;
             }
 
             // Throws abort exceptions
@@ -299,6 +483,14 @@ namespace Hardmob
                     }
                 }
 
+                // Proxy failed
+                if (wex.Status == WebExceptionStatus.RequestProhibitedByProxy)
+                {
+                    // Not found
+                    text = null;
+                    return ThreadStatus.NotFound;
+                }
+
                 // Continue with exception
                 throw;
             }
@@ -314,9 +506,6 @@ namespace Hardmob
                 // Sequential exceptions
                 int exceptions = 0;
 
-                // Last time a update worked
-                int lastupdate = Environment.TickCount;
-
                 // Last save state
                 long lastsavestate = this._NextThread;
 
@@ -329,101 +518,39 @@ namespace Hardmob
                     try
                     {
                         // Debug
-                        Debug.WriteLine($"Next thread: {this._NextThread}");
+                        Debug.Write($"Fetching IDs... ");
 
-                        // Need to fetch older thread id?
-                        if (this._NextThread <= 0 || (Environment.TickCount - lastupdate) > this._PoolFullInterval)
+                        // List all available IDs
+                        HashSet<long> ids = new(this.ThreadsID());
+
+                        // Did get any thread?
+                        if (ids.Count > 0)
                         {
-                            // Debug
-                            Debug.Write($"Full fetch... ");
-
-                            // List all available IDs
-                            HashSet<long> ids = new(this.ThreadsID());
+                            // Get the maximum ID
+                            long maximum = ids.Max();
 
                             // Debug
-                            Debug.WriteLine($"ok, {ids.Count} threads");
+                            Debug.WriteLine($"ok {ids.Count} threads, last ID: {maximum}, next process ID:{this._NextThread}");
 
-                            // Did get any thread?
-                            if (ids.Count > 0)
+                            // Fetching every new thread
+                            for (long i = this._NextThread; i <= maximum; i++)
                             {
-                                // Get the maximum ID
-                                long maximum = ids.Max();
-
-                                // Missed any thread?
-                                if (this._NextThread > 0 && maximum >= this._NextThread)
-                                {
-                                    // Fetching every missed thread
-                                    for (long i = this._NextThread; i <= maximum; i++)
-                                    {
-                                        // Process it if in forum
-                                        if (ids.Contains(i))
-                                            this.ProcessThread(i);
-                                    }
-                                }
-
-                                // Update last full update
-                                lastupdate = Environment.TickCount;
-
-                                // Update next fetch
-                                this._NextThread = maximum + 1;
+                                // Process it if in forum
+                                if (ids.Contains(i))
+                                    this.ProcessThread(i);
                             }
+
+                            // Update next fetch
+                            this._NextThread = Math.Max(maximum + 1, this._NextThread);
                         }
                         else
                         {
-                            // While processing threads
-                            while (this._Active)
-                            {
-                                // Fetch next tread
-                                ThreadStatus status = this.GetThread(this._NextThread, out string threadtext);
-
-                                // Not found, does not exist yet
-                                if (status == ThreadStatus.NotFound)
-                                    break;
-
-                                // Does exists but it's private
-                                else if (status == ThreadStatus.Private)
-                                    this._NextThread++;
-
-                                // Does exists and it's public
-                                else if (status == ThreadStatus.Public)
-                                {
-                                    // Parse the thread
-                                    if (PromoThread.TryParse(threadtext, this._NextThread, $"{BASE_URL}{THREADS_URL}/{this._NextThread}", out PromoThread thread))
-                                    {
-                                        // Check if it's a promo thread
-                                        if (this.ThreadsID().Contains(this._NextThread))
-                                        {
-                                            // Process the thread
-                                            this.ProcessThread(thread);
-
-                                            // Update last fast update
-                                            lastupdate = Environment.TickCount;
-                                        }
-                                    }
-
-                                    // Next thread
-                                    this._NextThread++;
-                                }
-
-                                // Unknown
-                                else
-                                    throw new NotImplementedException();
-
-                                // Reset exception count
-                                exceptions = 0;
-                            }
-                        }
-
-                        // Next thread ID changed since last save?
-                        if (lastsavestate != this._NextThread)
-                        {
-                            // Save current state
-                            this.SaveState();
-                            lastsavestate = this._NextThread;
+                            // Debug
+                            Debug.WriteLine("failed");
                         }
                     }
 
-                    // Throw abortion
+                    // Throw thread abortion
                     catch (ThreadAbortException) { throw; }
 
                     // Other exceptions
@@ -438,14 +565,14 @@ namespace Hardmob
                             // Notify bot about it
                             this._Bot.SendMessage($"<b>Server exception</b>\r\n<b>Message:</b> {WebUtility.HtmlEncode(ex.Message)}\r\n<b>Type:</b> {WebUtility.HtmlEncode(ex.GetType().FullName)}", TelegramParseModes.HTML);
                         }
+                    }
 
-                        // Next thread ID changed since last save?
-                        if (lastsavestate != this._NextThread)
-                        {
-                            // Save current state
-                            this.SaveState();
-                            lastsavestate = this._NextThread;
-                        }
+                    // Next thread ID changed since last save?
+                    if (lastsavestate != this._NextThread)
+                    {
+                        // Save current state
+                        this.SaveState();
+                        lastsavestate = this._NextThread;
                     }
 
                     // Wait next pool
@@ -477,10 +604,18 @@ namespace Hardmob
             {
                 // Parse data and process
                 if (PromoThread.TryParse(threadtext, id, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread thread))
+                {
+                    // Process thread data
                     this.ProcessThread(thread);
 
-                // Debug
-                Debug.WriteLine("ok");
+                    // Debug
+                    Debug.WriteLine("ok");
+                }
+                else
+                {
+                    // Debug
+                    Debug.WriteLine("empty");
+                }
             }
             else
             {
@@ -575,12 +710,8 @@ namespace Hardmob
         /// </summary>
         private IEnumerable<long> ThreadsID()
         {
-            // Initializing connection
-            HttpWebRequest connection = this.CreateConnection($"{BASE_URL}{FORUMS_URL}/{PROMO_FORUM_ID}");
-
             // Gets the response
-            using WebResponse webresponse = connection.GetResponse();
-            string response = webresponse.GetResponseText();
+            string response = this.GetData($"{BASE_URL}{FORUMS_URL}/{PROMO_FORUM_ID}");
 
             // Current search position
             int pos = 0;
