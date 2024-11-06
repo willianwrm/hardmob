@@ -103,7 +103,7 @@ namespace Hardmob
 
                                     // Validate link
                                     string link = content.Substring(linkstart + 6, linkend - linkstart - 6);
-                                    if (IsFullURL(link) && !IsImageURL(link))
+                                    if (IsFullURL(link) && !IsImageURL(link) && !IsServerURL(link))
                                     {
                                         // Link found
                                         promo.Link = link;
@@ -356,10 +356,10 @@ namespace Hardmob
         /// <summary>
         /// Get properties from HTML tag
         /// </summary>
-        private static Dictionary<string, string> GetValues(string input)
+        private static void GetValues(string input, Dictionary<string, string> output)
         {
-            // Initialize output
-            Dictionary<string, string> output = new(StringComparer.OrdinalIgnoreCase);
+            // Clears the output
+            output.Clear();
 
             // Current position
             int pos = 0;
@@ -398,9 +398,6 @@ namespace Hardmob
                 // Update next search
                 pos = end + 1;
             }
-
-            // Returns itens
-            return output;
         }
 
         /// <summary>
@@ -459,6 +456,19 @@ namespace Hardmob
         }
 
         /// <summary>
+        /// Check if URL (partial or full) seems to be in the forum server
+        /// </summary>
+        private static bool IsServerURL(string url)
+        {
+            // Start of url
+            int start = url.IndexOf("://");
+            start = start <= 0 ? 0 : start + 3;
+
+            // Check for link
+            return url.Substring(start).StartsWith(Crawler.SERVER, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
         /// Check if URL (partial or full) seems to be image
         /// </summary>
         private static bool IsImageURL(string url)
@@ -494,7 +504,7 @@ namespace Hardmob
         /// <summary>
         /// Try to fetch an image from URL HTML
         /// </summary>
-        private static bool TryFetchImage(string url, out string image)
+        public static bool TryFetchImage(string url, out string image)
         {
             try
             {
@@ -504,6 +514,9 @@ namespace Hardmob
                 // Gets the response
                 using WebResponse webresponse = connection.GetResponse();
                 string responsetext = webresponse.GetResponseText();
+
+                // Buffered values from fetch
+                Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
 
                 // Trying meta data
                 {
@@ -524,7 +537,7 @@ namespace Hardmob
                             break;
 
                         // Fetch meta values
-                        Dictionary<string, string> values = GetValues(responsetext.Substring(start + 5, end - start - 5));
+                        GetValues(responsetext.Substring(start + 5, end - start - 5), values);
 
                         // Check for name or property
                         if (values.TryGetValue("""property""", out string property) || values.TryGetValue("""name""", out property))
@@ -545,6 +558,44 @@ namespace Hardmob
                                         }
                                         break;
                                 }
+                            }
+                        }
+
+                        // Update next search
+                        pos = end + 1;
+                    }
+                }
+
+                // Trying link data
+                {
+                    // Current position in the response
+                    int pos = 0;
+
+                    // While not ended
+                    while (true)
+                    {
+                        // Search for next link, start
+                        int start = responsetext.IndexOf("""<link""", pos, StringComparison.OrdinalIgnoreCase);
+                        if (start < 0)
+                            break;
+
+                        // Next end
+                        int end = responsetext.IndexOf(""">""", start, StringComparison.OrdinalIgnoreCase);
+                        if (end <= start)
+                            break;
+
+                        // Fetch meta values
+                        GetValues(responsetext.Substring(start + 5, end - start - 5), values);
+
+                        // Check for 'as' value
+                        if (values.TryGetValue("""as""", out string property) && StringComparer.OrdinalIgnoreCase.Equals(property, """image"""))
+                        {
+                            // Does have content?
+                            if (values.TryGetValue("""href""", out string content))
+                            {
+                                // Try parse to full URL
+                                if (TryParseFullURL(url, content, out image))
+                                    return true;
                             }
                         }
 
@@ -621,8 +672,17 @@ namespace Hardmob
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
 
-            // Ignore any other exception
-            catch {; }
+            // Other exceptions
+            catch
+            {
+                // Link does includes parameters?
+                int n = url.IndexOf('&');
+                if (n > 0)
+                {
+                    // Tries without parameters
+                    return TryFetchImage(url.Substring(0, n), out image);
+                }
+            }
 
             // Image not found
             image = null;

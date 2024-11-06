@@ -565,12 +565,12 @@ namespace Hardmob
                 if (image.Width > MAXIMUM_PHOTO_SIZE)
                 {
                     // Resize with maximum width
-                    image.Resize(MAXIMUM_PHOTO_SIZE, (int)Math.Ceiling(((double)MAXIMUM_PHOTO_SIZE * image.Height) / image.Width));
+                    image.Resize(MAXIMUM_PHOTO_SIZE, (uint)Math.Ceiling(((double)MAXIMUM_PHOTO_SIZE * image.Height) / image.Width));
                 }
                 else
                 {
                     // Resize with maximum height
-                    image.Resize((int)Math.Ceiling(((double)MAXIMUM_PHOTO_SIZE * image.Width) / image.Height), MAXIMUM_PHOTO_SIZE);
+                    image.Resize((uint)Math.Ceiling(((double)MAXIMUM_PHOTO_SIZE * image.Width) / image.Height), MAXIMUM_PHOTO_SIZE);
                 }
 
                 // Force JPG format
@@ -626,11 +626,11 @@ namespace Hardmob
             if (photodata.Length > MAXIMUM_PHOTO_FILE_SIZE)
             {
                 // Image quality
-                int quality = 100;
+                uint quality = 100;
 
                 // Force JPG format
                 image.Format = MagickFormat.Jpg;
-                phototype = """image/png""";
+                phototype = """image/jpg""";
 
                 // While not small enough
                 while (photodata.Length > MAXIMUM_PHOTO_FILE_SIZE)
@@ -647,7 +647,7 @@ namespace Hardmob
                     photodata = jpegstream.ToArray();
 
                     // Force exit if quality is below limit
-                    if (quality <= 1)
+                    if (quality <= 10)
                         break;
                 }
             }

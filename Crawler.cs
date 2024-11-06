@@ -19,6 +19,11 @@ namespace Hardmob
     {
         #region Constants
         /// <summary>
+        /// Server host address
+        /// </summary>
+        internal const string SERVER = """www.hardmob.com.br""";
+
+        /// <summary>
         /// Main URL prefix
         /// </summary>
         private const string BASE_URL = $"""https://{SERVER}/""";
@@ -87,11 +92,6 @@ namespace Hardmob
         /// Limit size for caption in sendPhoto command
         /// </summary>
         private const int SEND_PHOTO_CAPTION_LENGTH = 1024;
-
-        /// <summary>
-        /// Server host address
-        /// </summary>
-        private const string SERVER = """www.hardmob.com.br""";
 
         /// <summary>
         /// State file configuration key

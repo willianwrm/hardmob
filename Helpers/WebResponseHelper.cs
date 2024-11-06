@@ -1,8 +1,10 @@
 ﻿using RestSharp;
+using System;
 using System.IO;
 using System.Net;
 using System.Text;
 using System.Threading;
+using System.Web;
 
 namespace Hardmob.Helpers
 {
@@ -16,6 +18,10 @@ namespace Hardmob.Helpers
             // Check input
             if (response == null)
                 return null;
+
+            // Response seems to be 404?
+            if (Is404(response))
+                throw new HttpException((int)HttpStatusCode.NotFound, "Not found");
 
             // Default text encoding
             Encoding encoding = Encoding.ASCII;
@@ -138,6 +144,41 @@ namespace Hardmob.Helpers
 
             // No result
             return null;
+        }
+
+        /// <summary>
+        /// Check if response does look like 404 page
+        /// </summary>
+        private static bool Is404(WebResponse response)
+        {
+            // Check status code
+            if (response is HttpWebResponse http && http.StatusCode == HttpStatusCode.NotFound)
+                return true;
+
+            // Does have response URI?
+            Uri uri = response.ResponseUri;
+            if (uri != null)
+            {
+                // Does have segments?
+                string[] segments = uri.Segments;
+                if (segments != null && segments.Length > 0)
+                {
+                    // Remove extension
+                    string last = segments[segments.Length - 1];
+                    int n = last.LastIndexOf('.');
+                    if (n > 0)
+                        last = last.Substring(0, n);
+
+                    // Does look like 404 error?
+                    if (last == "404" ||
+                        StringComparer.OrdinalIgnoreCase.Equals(last, "error404") ||
+                        StringComparer.OrdinalIgnoreCase.Equals(last, "page404"))
+                        return true;
+                }
+            }
+
+            // Not 404
+            return false;
         }
     }
 }
