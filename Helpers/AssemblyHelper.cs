@@ -1,4 +1,6 @@
-﻿using System.Reflection;
+﻿// Ignore Spelling: Hardmob
+
+using System.Reflection;
 
 namespace Hardmob.Helpers
 {
@@ -10,7 +12,7 @@ namespace Hardmob.Helpers
         /// <summary>
         /// Get the assembly's product name
         /// </summary>
-        public static string GetProductName(this Assembly assembly)
+        public static string? GetProductName(this Assembly? assembly)
         {
             // Validate the input
             if (assembly != null)

@@ -1,5 +1,5 @@
-﻿using System;
-using System.IO;
+﻿// Ignore Spelling: Hardmob
+
 using System.Runtime.InteropServices;
 
 namespace Hardmob.Helpers

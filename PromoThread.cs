@@ -1,9 +1,7 @@
-﻿using Hardmob.Helpers;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
-using System.Threading;
+﻿// Ignore Spelling: Hardmob
+
+using Hardmob.Helpers;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Hardmob
 {
@@ -28,7 +26,7 @@ namespace Hardmob
         /// <summary>
         /// Extra relative informations
         /// </summary>
-        public string Extra;
+        public string? Extra;
 
         /// <summary>
         /// Thread ID
@@ -38,29 +36,29 @@ namespace Hardmob
         /// <summary>
         /// Image URL, may be null
         /// </summary>
-        public string Image;
+        public string? Image;
 
         /// <summary>
         /// Direct link to product, may be null
         /// </summary>
-        public string Link;
+        public string? Link;
 
         /// <summary>
         /// Topic title
         /// </summary>
-        public string Title;
+        public string? Title;
 
         /// <summary>
         /// Topic URL
         /// </summary>
-        public string URL;
+        public string? URL;
         #endregion
 
         #region Public
         /// <summary>
         /// Try extract promo info from raw HTML
         /// </summary>
-        public static bool TryParse(string input, long id, string url, out PromoThread promo)
+        public static bool TryParse([NotNullWhen(true)] string? input, long id, string url, [NotNullWhen(true)] out PromoThread? promo)
         {
             // Check input
             if (input != null)
@@ -80,7 +78,7 @@ namespace Hardmob
                         promo.ID = id;
 
                         // Get div content
-                        string content = GetContentDiv(input);
+                        string? content = GetContentDiv(input);
                         if (content != null)
                         {
                             // Finding LINK
@@ -159,11 +157,11 @@ namespace Hardmob
                         }
 
                         // Get description meta
-                        string description = GetDescriptionMeta(input);
+                        string? description = GetDescriptionMeta(input);
                         if (description != null)
                         {
                             // Extra important informations
-                            List<string> extra = new();
+                            List<string> extra = [];
 
                             // For each line of description
                             foreach (string line in description.Split('\n'))
@@ -177,11 +175,11 @@ namespace Hardmob
                                 if (n > 0 && n < line.Length - 1)
                                 {
                                     // Get left part, doesn't add if it's just a link
-                                    string left = line.Substring(0, n).Trim();
+                                    string left = line[..n].Trim();
                                     if (!IGNORE_EXTRA_INFO.Contains(left, StringComparer.OrdinalIgnoreCase))
                                     {
                                         // Get the right part, must not be empty
-                                        string right = line.Substring(n + 1);
+                                        string right = line[(n + 1)..];
                                         if (!string.IsNullOrWhiteSpace(right))
                                             extra.Add(line.Trim());
                                     }
@@ -224,7 +222,7 @@ namespace Hardmob
                             if (promo.Image == null && promo.Link != null)
                             {
                                 // Try fetch the image from the link
-                                if (TryFetchImage(promo.Link, out string image))
+                                if (TryFetchImage(promo.Link, out string? image))
                                     promo.Image = image;
                             }
                         }
@@ -269,7 +267,7 @@ namespace Hardmob
         /// <summary>
         /// Get the content of 'content' div
         /// </summary>
-        private static string GetContentDiv(string input)
+        private static string? GetContentDiv(string input)
         {
             // Current position
             int pos = 0;
@@ -295,7 +293,7 @@ namespace Hardmob
                     if (end > start)
                     {
                         // Get's div content
-                        return input.Substring(start, end - start);
+                        return input[start..end];
                     }
                 }
 
@@ -310,7 +308,7 @@ namespace Hardmob
         /// <summary>
         /// Get contents from description meta
         /// </summary>
-        private static string GetDescriptionMeta(string input)
+        private static string? GetDescriptionMeta(string input)
         {
             // Current position
             int pos = 0;
@@ -373,10 +371,10 @@ namespace Hardmob
                     break;
 
                 // Left part
-                string left = input.Substring(pos, valuesep - pos).Trim();
+                string left = input[pos..valuesep].Trim();
                 int whitespace = left.LastIndexOf(' ');
                 if (whitespace >= 0)
-                    left = left.Substring(whitespace + 1);
+                    left = left[(whitespace + 1)..];
 
                 // Find where the value starts
                 int start = input.IndexOf('"', valuesep + 1);
@@ -392,8 +390,7 @@ namespace Hardmob
                 string right = input.Substring(start + 1, end - start - 1);
 
                 // Return item
-                if (!output.ContainsKey(left))
-                    output.Add(left, right);
+                output.TryAdd(left, right);
 
                 // Update next search
                 pos = end + 1;
@@ -465,7 +462,7 @@ namespace Hardmob
             start = start <= 0 ? 0 : start + 3;
 
             // Check for link
-            return url.Substring(start).StartsWith(Crawler.SERVER, StringComparison.OrdinalIgnoreCase);
+            return url[start..].StartsWith(Crawler.SERVER, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -476,14 +473,14 @@ namespace Hardmob
             // Remove any extra url
             int extra = url.IndexOf('?');
             if (extra > 0)
-                url = url.Substring(0, extra);
+                url = url[..extra];
 
             // Check for extension
             int n = url.LastIndexOf('.');
             if (n > 0)
             {
                 // Get extension
-                string extension = url.Substring(n + 1);
+                string extension = url[(n + 1)..];
 
                 // Check extension
                 switch (extension.ToUpper())
@@ -504,16 +501,19 @@ namespace Hardmob
         /// <summary>
         /// Try to fetch an image from URL HTML
         /// </summary>
-        public static bool TryFetchImage(string url, out string image)
+        public static bool TryFetchImage(string url, [NotNullWhen(true)] out string? image)
         {
             try
             {
-                // Initializing connection
-                HttpWebRequest connection = Core.CreateWebRequest(url);
+                // Client HTTP
+                using HttpClient client = Core.CreateWebClient();
+
+                // HTTP request
+                using HttpRequestMessage message = Core.CreateWebRequest(url);
 
                 // Gets the response
-                using WebResponse webresponse = connection.GetResponse();
-                string responsetext = webresponse.GetResponseText();
+                using HttpResponseMessage response = client.Send(message);
+                string responsetext = response.GetResponseText();
 
                 // Buffered values from fetch
                 Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
@@ -540,10 +540,10 @@ namespace Hardmob
                         GetValues(responsetext.Substring(start + 5, end - start - 5), values);
 
                         // Check for name or property
-                        if (values.TryGetValue("""property""", out string property) || values.TryGetValue("""name""", out property))
+                        if (values.TryGetValue("""property""", out string? property) || values.TryGetValue("""name""", out property))
                         {
                             // Does have content?
-                            if (values.TryGetValue("""content""", out string content))
+                            if (values.TryGetValue("""content""", out string? content))
                             {
                                 // Check property name
                                 switch (property.ToLower())
@@ -588,10 +588,10 @@ namespace Hardmob
                         GetValues(responsetext.Substring(start + 5, end - start - 5), values);
 
                         // Check for 'as' value
-                        if (values.TryGetValue("""as""", out string property) && StringComparer.OrdinalIgnoreCase.Equals(property, """image"""))
+                        if (values.TryGetValue("""as""", out string? property) && StringComparer.OrdinalIgnoreCase.Equals(property, """image"""))
                         {
                             // Does have content?
-                            if (values.TryGetValue("""href""", out string content))
+                            if (values.TryGetValue("""href""", out string? content))
                             {
                                 // Try parse to full URL
                                 if (TryParseFullURL(url, content, out image))
@@ -671,6 +671,8 @@ namespace Hardmob
 
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
+            catch (OperationCanceledException) { throw; }
 
             // Other exceptions
             catch
@@ -680,7 +682,7 @@ namespace Hardmob
                 if (n > 0)
                 {
                     // Tries without parameters
-                    return TryFetchImage(url.Substring(0, n), out image);
+                    return TryFetchImage(url[..n], out image);
                 }
             }
 
@@ -692,7 +694,7 @@ namespace Hardmob
         /// <summary>
         /// Try parse to complete URL
         /// </summary>
-        private static bool TryParseFullURL(string @base, string input, out string url)
+        private static bool TryParseFullURL(string @base, string input, [NotNullWhen(true)] out string? url)
         {
             // Is already full?
             if (IsFullURL(input))
@@ -703,10 +705,10 @@ namespace Hardmob
             }
 
             // Try create prefix url
-            if (Uri.TryCreate(@base, UriKind.Absolute, out Uri prefix))
+            if (Uri.TryCreate(@base, UriKind.Absolute, out Uri? prefix))
             {
                 // Try join both url
-                if (Uri.TryCreate(prefix, input, out Uri output))
+                if (Uri.TryCreate(prefix, input, out Uri? output))
                 {
                     // Completed
                     url = output.ToString();

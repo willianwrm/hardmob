@@ -1,4 +1,6 @@
-﻿namespace Hardmob
+﻿// Ignore Spelling: Hardmob
+
+namespace Hardmob
 {
     /// <summary>
     /// Forum thread status

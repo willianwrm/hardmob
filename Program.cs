@@ -1,8 +1,7 @@
-﻿using Hardmob.Helpers;
-using System;
-using System.Diagnostics;
+﻿// Ignore Spelling: Hardmob
+
+using Hardmob.Helpers;
 using System.ServiceProcess;
-using System.Threading;
 
 namespace Hardmob
 {
@@ -18,9 +17,6 @@ namespace Hardmob
         {
             try
             {
-                // Register debug
-                DebugConsole();
-
                 // Check the start args
                 if (args != null && args.Length > 0)
                 {
@@ -61,19 +57,11 @@ namespace Hardmob
 
             // Throws abort
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
+            catch (OperationCanceledException) { throw; }
 
             // Register exceptions
             catch (Exception ex) { ex.Log(); }
-        }
-
-        /// <summary>
-        /// Add console do debug
-        /// </summary>
-        [Conditional("DEBUG")]
-        private static void DebugConsole()
-        {
-            // Add console do debug
-            Debug.Listeners.Add(new ConsoleTraceListener());
         }
     }
 }

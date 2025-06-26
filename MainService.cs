@@ -1,9 +1,9 @@
-﻿using Hardmob.Helpers;
+﻿// Ignore Spelling: Hardmob
+
+using Hardmob.Helpers;
 using IniParser.Model;
 using IniParser.Parser;
 using RestSharp;
-using System;
-using System.IO;
 using System.Net;
 using System.ServiceProcess;
 
@@ -12,11 +12,6 @@ namespace Hardmob
     public partial class MainService : ServiceBase
     {
         #region Constants
-        /// <summary>
-        /// Application configuration section name
-        /// </summary>
-        private const string APP_SECTION = """App""";
-
         /// <summary>
         /// Configuration file name
         /// </summary>
@@ -38,31 +33,26 @@ namespace Hardmob
         private const string REST_SECTION = """REST""";
 
         /// <summary>
-        /// Time before thread abortion when stopping the service
-        /// </summary>
-        private const int STOP_ABORT_TIMEOUT = 4 * 1000;
-
-        /// <summary>
         /// Telegram configuration section name
         /// </summary>
         private const string TELEGRAM_SECTION = """Telegram""";
-
-        /// <summary>
-        /// User agent configuration key
-        /// </summary>
-        private const string USER_AGENT_KEY = """useragent""";
         #endregion
 
         #region Variables
         /// <summary>
+        /// Waits for <see cref="OnStop"/>
+        /// </summary>
+        private readonly ManualResetEvent _StopWait = new(false);
+
+        /// <summary>
         /// Forum crawler
         /// </summary>
-        private Crawler _Crawler;
+        private Crawler? _Crawler;
 
         /// <summary>
         /// Telegram's bot
         /// </summary>
-        private TelegramBot _Telegram;
+        private TelegramBot? _Telegram;
         #endregion
 
         #region Constructors
@@ -80,7 +70,7 @@ namespace Hardmob
         /// <summary>
         /// Simulates the service start
         /// </summary>
-        internal void StartDebug() => this.OnStart(null);
+        internal void StartDebug() => this.OnStart([]);
 
         /// <summary>
         /// Simulates the service stop
@@ -92,10 +82,6 @@ namespace Hardmob
         /// <inheritdoc/>
         protected override void OnStart(string[] args)
         {
-            // Configuring web security
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls13 | SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls | SecurityProtocolType.Ssl3;
-            ServicePointManager.ReusePort = true;
-
             // INI file name
             string inifile = Path.Combine(Core.AppDir, CONFIGURATION_FILE);
 
@@ -121,15 +107,11 @@ namespace Hardmob
             // Parse configuration file
             IniData ini = parser.Parse(File.ReadAllText(inifile));
 
-            // Fetch configurations
-            KeyDataCollection app = ini[APP_SECTION];
-            Core.WebUserAgent = app.ContainsKey(USER_AGENT_KEY) && !string.IsNullOrWhiteSpace(app[USER_AGENT_KEY]) ? app[USER_AGENT_KEY] : null;
-
             // Create telegram bot
             this._Telegram = new(ini[TELEGRAM_SECTION]);
 
             // REST redirect, used only by crawler when fails
-            RestClientOptions redirect = null;
+            RestClientOptions? redirect = null;
 
             // Does have REST configuration?
             if (ini.Sections.ContainsSection(REST_SECTION))
@@ -162,6 +144,9 @@ namespace Hardmob
 
             // Create crawler
             this._Crawler = new(ini[CRAWLER_SECTION], this._Telegram, redirect);
+
+            // Wait until stop
+            this._StopWait.WaitOne();
         }
 
         /// <inheritdoc/>
@@ -171,8 +156,11 @@ namespace Hardmob
             this._Telegram?.Dispose();
             this._Crawler?.Dispose();
 
-            // Abort threads
-            ThreadHelper.SafeAbort(STOP_ABORT_TIMEOUT, this._Telegram?.QueueSenderThread, this._Crawler?.CrawlerThread);
+            // Interrupt threads
+            ThreadHelper.SafeInterrupt(this._Telegram?.QueueSenderThread, this._Crawler?.CrawlerThread);
+
+            // Stop main thread
+            this._StopWait.Set();
         }
         #endregion
     }

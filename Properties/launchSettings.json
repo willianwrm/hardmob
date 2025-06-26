@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Hardmob": {
+      "commandName": "Project",
+      "commandLineArgs": "console"
+    }
+  }
+}

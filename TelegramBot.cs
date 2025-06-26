@@ -1,17 +1,16 @@
-﻿using Hardmob.Helpers;
+﻿// Ignore Spelling: Hardmob
+
+using Hardmob.Helpers;
 using ImageMagick;
 using IniParser.Model;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Resources;
 using System.Text;
-using System.Threading;
 
 namespace Hardmob
 {
@@ -86,7 +85,7 @@ namespace Hardmob
         /// <summary>
         /// Class resource cache
         /// </summary>
-        private static WeakReference<ResourceManager> _Resource;
+        private static WeakReference<ResourceManager>? _Resource;
 
         /// <summary>
         /// Waiting for <see cref="_Active"/> changes
@@ -94,9 +93,19 @@ namespace Hardmob
         private readonly ManualResetEvent _ActiveWait = new(false);
 
         /// <summary>
+        /// Waiting for <see cref="_Active"/> changes
+        /// </summary>
+        private readonly CancellationTokenSource _Cancellation = new();
+
+        /// <summary>
         /// Chat ID
         /// </summary>
         private readonly long _Chat;
+
+        /// <summary>
+        /// Web cookies
+        /// </summary>
+        private readonly CookieContainer _Cookies = new();
 
         /// <summary>
         /// Messages to be sent (files)
@@ -116,7 +125,7 @@ namespace Hardmob
         /// <summary>
         /// Sync for creating queue sender
         /// </summary>
-        private readonly object _QueueSenderLock = new();
+        private readonly Lock _QueueSenderLock = new();
 
         /// <summary>
         /// Bot's secret token
@@ -131,7 +140,7 @@ namespace Hardmob
         /// <summary>
         /// Sending queued messages
         /// </summary>
-        private Thread _QueueSender;
+        private Thread? _QueueSender;
         #endregion
 
         #region Constructors
@@ -141,13 +150,9 @@ namespace Hardmob
         /// <param name="configurations">Bot's configurations</param>
         public TelegramBot(KeyDataCollection configurations)
         {
-            // Check configuration
-            if (configurations == null)
-                throw new ArgumentNullException(nameof(configurations));
-
             // Get token and chat ID
-            this._Token = configurations.ContainsKey(TOKEN_KEY) && !string.IsNullOrWhiteSpace(configurations[TOKEN_KEY]) ? configurations[TOKEN_KEY] : throw new ArgumentNullException(TOKEN_KEY, TelegramBot.ResourceManager.GetString("EmptyToken"));
-            this._Chat = configurations.ContainsKey(CHAT_KEY) && long.TryParse(configurations[CHAT_KEY], out long chat) ? chat : throw new ArgumentOutOfRangeException(CHAT_KEY, TelegramBot.ResourceManager.GetString("EmptyChatID"));
+            this._Token = configurations.ContainsKey(TOKEN_KEY) && !string.IsNullOrWhiteSpace(configurations[TOKEN_KEY]) ? configurations[TOKEN_KEY] : throw new ArgumentNullException(nameof(configurations), TelegramBot.ResourceManager.GetString("EmptyToken"));
+            this._Chat = configurations.ContainsKey(CHAT_KEY) && long.TryParse(configurations[CHAT_KEY], out long chat) ? chat : throw new ArgumentOutOfRangeException(nameof(configurations), TelegramBot.ResourceManager.GetString("EmptyChatID"));
 
             // Queued message path
             this._QueuePath = configurations.ContainsKey(QUEUE_PATH_KEY) && !string.IsNullOrWhiteSpace(configurations[QUEUE_PATH_KEY]) ? Path.GetFullPath(Path.Combine(Core.AppDir, configurations[QUEUE_PATH_KEY])) : Path.Combine(Core.AppDir, DEFAULT_QUEUE_PATH);
@@ -156,7 +161,7 @@ namespace Hardmob
             if (Directory.Exists(this._QueuePath) && Directory.EnumerateFiles(this._QueuePath).Any())
             {
                 // Get all files in queue path
-                List<string> queuefiles = new(Directory.EnumerateFiles(this._QueuePath));
+                List<string> queuefiles = [.. Directory.EnumerateFiles(this._QueuePath)];
 
                 // Sort then to be added in the order they were written
                 queuefiles.Sort((a, b) => File.GetLastWriteTimeUtc(a).CompareTo(File.GetLastWriteTimeUtc(b)));
@@ -180,7 +185,7 @@ namespace Hardmob
             get
             {
                 // Tries by cache
-                if (TelegramBot._Resource?.TryGetTarget(out ResourceManager resource) ?? false)
+                if (TelegramBot._Resource?.TryGetTarget(out ResourceManager? resource) ?? false)
                     return resource;
 
                 // Load new resource
@@ -200,7 +205,7 @@ namespace Hardmob
         /// <summary>
         /// Thread sending any queued message
         /// </summary>
-        public Thread QueueSenderThread => this._QueueSender;
+        public Thread? QueueSenderThread => this._QueueSender;
         #endregion
 
         #region Public
@@ -210,6 +215,7 @@ namespace Hardmob
             // Set as inactive
             this._Active = false;
             this._ActiveWait.Set();
+            this._Cancellation.Cancel();
         }
 
         /// <summary>
@@ -221,12 +227,8 @@ namespace Hardmob
         /// <remarks>The message will be enqueued for later send if not succeeded</remarks>
         public void SendMessage(string text, TelegramParseModes mode)
         {
-            // Validate input
-            if (text == null)
-                throw new ArgumentNullException(nameof(text));
-
             // Prepare the message to be sent
-            JObject message = new();
+            JObject message = [];
             message.Add("""text""", text);
             message.Add("""disable_web_page_preview""", true);
             SetParseMode(message, mode);
@@ -244,12 +246,8 @@ namespace Hardmob
         /// <remarks>The photo will be enqueued for later send if not succeeded, will send as message if error persist</remarks>
         public void SendPhoto(string photoUrl, string caption, TelegramParseModes mode)
         {
-            // Validate input
-            if (photoUrl == null)
-                throw new ArgumentNullException(nameof(photoUrl));
-
             // Prepare the message to be sent
-            JObject message = new();
+            JObject message = [];
             message.Add("""photo""", photoUrl);
             if (!string.IsNullOrEmpty(caption))
                 message.Add("""caption""", caption);
@@ -264,17 +262,16 @@ namespace Hardmob
         /// <summary>
         /// Check the Telegram server result, throws exception if fail
         /// </summary>
-        private static void CheckTelegramResponse(HttpWebRequest connection)
+        private static void CheckTelegramResponse(HttpResponseMessage response)
         {
             try
             {
                 // Gets the response
-                using WebResponse webresponse = connection.GetResponse();
-                string responsetext = webresponse.GetResponseText();
+                string responsetext = response.GetResponseText();
 
                 // Check if it's all ok
                 JObject json = JObject.Parse(responsetext);
-                if (!json.ContainsKey("ok") || json["ok"].Type != JTokenType.Boolean || !(bool)json["ok"])
+                if (!json.ContainsKey("ok") || json["ok"]!.Type != JTokenType.Boolean || !(bool)json["ok"]!)
                     throw new WebException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {responsetext}{Environment.NewLine}{json.ToString(Formatting.None)}", WebExceptionStatus.UnknownError);
             }
 
@@ -282,7 +279,7 @@ namespace Hardmob
             catch (WebException wex)
             {
                 // Is there a response?
-                string errortext = wex.Response?.GetResponseText();
+                string? errortext = wex.Response?.GetResponseText();
                 if (errortext != null)
                     throw new WebException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {wex.Message}{Environment.NewLine}{errortext}", wex, wex.Status, wex.Response);
 
@@ -315,7 +312,7 @@ namespace Hardmob
         /// <summary>
         /// Try to load message from file
         /// </summary>
-        private static bool TryLoadMessage(string file, out JObject message)
+        private static bool TryLoadMessage(string file, [NotNullWhen(true)] out JObject? message)
         {
             try
             {
@@ -326,6 +323,8 @@ namespace Hardmob
 
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
+            catch (OperationCanceledException) { throw; }
 
             // Unable to load file
             catch
@@ -338,6 +337,8 @@ namespace Hardmob
 
                 // Throws abort exceptions
                 catch (ThreadAbortException) { throw; }
+                catch (ThreadInterruptedException) { throw; }
+                catch (OperationCanceledException) { throw; }
 
                 // Ignore further exceptions
                 catch {; }
@@ -384,10 +385,10 @@ namespace Hardmob
                 while (this._Active)
                 {
                     // Get next queued message
-                    if (this._Queued.TryDequeue(out string file))
+                    if (this._Queued.TryDequeue(out string? file))
                     {
                         // Fetch message data
-                        if (TryLoadMessage(file, out JObject message))
+                        if (TryLoadMessage(file, out JObject? message))
                         {
                             // Update the message
                             this.UpdateMessage(message);
@@ -404,7 +405,7 @@ namespace Hardmob
                                     if (exceptions > 0 && exceptions % MAXIMUM_PHOTO_TRIES == 0 && message.ContainsKey("""photo"""))
                                     {
                                         // Clone message
-                                        JObject textmessage = new(message);
+                                        JObject textmessage = [.. message];
 
                                         // Remove the photo
                                         textmessage.Remove("""photo""");
@@ -413,7 +414,7 @@ namespace Hardmob
                                         if (textmessage.ContainsKey("""caption""") && !textmessage.ContainsKey("""text"""))
                                         {
                                             // Translate caption to text
-                                            textmessage.Add("""text""", (string)textmessage["""caption"""]);
+                                            textmessage.Add("""text""", (string)textmessage["""caption"""]!);
                                             textmessage.Remove("""caption""");
                                         }
 
@@ -492,19 +493,19 @@ namespace Hardmob
 
             // Encode to UTF-8
             byte[] data = Encoding.UTF8.GetBytes(rawmessage);
+            ByteArrayContent content = new(data);
+            content.Headers.ContentType = MediaTypeHeaderValue.Parse(JSON_CONTENT_TYPE);
 
-            // Initializing connection
-            HttpWebRequest connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", """POST""");
-            connection.ContentLength = data.Length;
-            connection.ContentType = JSON_CONTENT_TYPE;
-            connection.KeepAlive = false;
+            // Client HTTP
+            using HttpClient client = Core.CreateWebClient(this._Cookies);
 
-            // Connects and them post data
-            using (Stream connectionstream = connection.GetRequestStream())
-                connectionstream.Write(data, 0, data.Length);
+            // HTTP request
+            using HttpRequestMessage httpMessage = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", HttpMethod.Post);
+            httpMessage.Content = content;
 
-            // Check result
-            CheckTelegramResponse(connection);
+            // Gets result and check it
+            using HttpResponseMessage response = client.Send(httpMessage, this._Cancellation.Token);
+            CheckTelegramResponse(response);
         }
 
         /// <summary>
@@ -523,6 +524,8 @@ namespace Hardmob
 
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
+            catch (OperationCanceledException) { throw; }
 
             // Other exceptions
             catch (Exception ex)
@@ -540,13 +543,19 @@ namespace Hardmob
         /// </summary>
         private void SendPhotoMultipart(JObject message)
         {
+            // Client HTTP
+            using HttpClient client = Core.CreateWebClient(this._Cookies);
+
+            // HTTP request
+            using HttpRequestMessage httpMessage = Core.CreateWebRequest((string)message["""photo"""]!);
+
             // Download image data
-            HttpWebRequest connection = Core.CreateWebRequest((string)message["""photo"""]);
             using MemoryStream imagestream = new();
             {
                 // Read response to stream
-                using WebResponse webresponse = connection.GetResponse();
-                using Stream webstream = webresponse.GetResponseStream();
+                using HttpResponseMessage response = client.Send(httpMessage, this._Cancellation.Token);
+                using HttpContent responseContent = response.Content;
+                using Stream webstream = responseContent.ReadAsStream(this._Cancellation.Token);
                 webstream.CopyTo(imagestream);
                 imagestream.Position = 0;
             }
@@ -653,27 +662,19 @@ namespace Hardmob
             }
 
             // Boundary separador
-            string boundary = $"boundary{Guid.NewGuid():N}";
-            byte[] boundarydata = Encoding.ASCII.GetBytes($"\r\n--{boundary}\r\n");
-            byte[] boundaryenddata = Encoding.ASCII.GetBytes($"\r\n--{boundary}--\r\n");
+            MultipartFormDataContent postContent = [];
 
-            // Multi part stream
-            using MemoryStream multipart = new();
+            // Multi part data
+            using MultipartFormDataContent multipart = [];
 
             // Write forma-data
             void WriteFormData(string key, string value)
             {
-                // Writes the boundary
-                multipart.Write(boundarydata, 0, boundarydata.Length);
+                // Create content
+                StringContent content = new(value, Encoding.UTF8);
 
-                // Writes header
-                string header = $"Content-Disposition: form-data; name=\"{key}\"\r\n\r\n";
-                byte[] headerdata = Encoding.UTF8.GetBytes(header);
-                multipart.Write(headerdata, 0, headerdata.Length);
-
-                // Writes data value
-                byte[] valuedata = Encoding.UTF8.GetBytes(value);
-                multipart.Write(valuedata, 0, valuedata.Length);
+                // Add to multi part
+                multipart.Add(content, key);
             }
 
             // For each value in message
@@ -685,47 +686,34 @@ namespace Hardmob
                     // Photo data?
                     case """photo""":
                         {
-                            // Writes the boundary
-                            multipart.Write(boundarydata, 0, boundarydata.Length);
+                            // Create content
+                            ByteArrayContent photoContent = new(photodata);
+                            photoContent.Headers.ContentType = new MediaTypeHeaderValue(phototype);
 
-                            // Writes header
-                            string header = $"Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\nContent-Type: {phototype}\r\n\r\n";
-                            byte[] headerdata = Encoding.UTF8.GetBytes(header);
-                            multipart.Write(headerdata, 0, headerdata.Length);
-
-                            // Writes the photo file
-                            multipart.Write(photodata, 0, photodata.Length);
+                            // Add to multi part
+                            multipart.Add(photoContent, """photo""", """photo""");
                         }
                         break;
 
                     // Text? Will be translated as caption
                     case """text""":
-                        WriteFormData("""caption""", (string)pair.Value);
+                        WriteFormData("""caption""", pair.Value?.ToString() ?? string.Empty);
                         break;
 
                     // Others
                     default:
-                        WriteFormData(pair.Key, (string)pair.Value);
+                        WriteFormData(pair.Key, pair.Value?.ToString() ?? string.Empty);
                         break;
                 }
             }
 
-            // Finalize with end boundary
-            multipart.Write(boundaryenddata, 0, boundaryenddata.Length);
-            multipart.Position = 0;
+            // HTTP request
+            using HttpRequestMessage telegramPost = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", HttpMethod.Post);
+            telegramPost.Content = multipart;
 
-            // Initializing connection
-            connection = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", """POST""");
-            connection.ContentLength = multipart.Length;
-            connection.ContentType = $"multipart/form-data; boundary=\"{boundary}\"";
-            connection.KeepAlive = false;
-
-            // Connects and post data
-            using (Stream connectionstream = connection.GetRequestStream())
-                multipart.CopyTo(connectionstream);
-
-            // Check result
-            CheckTelegramResponse(connection);
+            // Gets result and check it
+            using HttpResponseMessage telegramResponse = client.Send(telegramPost, this._Cancellation.Token);
+            CheckTelegramResponse(telegramResponse);
         }
 
         /// <summary>
@@ -769,6 +757,8 @@ namespace Hardmob
 
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
+            catch (OperationCanceledException) { throw; }
 
             // Ignore any other exception
             catch {; }

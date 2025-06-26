@@ -1,17 +1,13 @@
-﻿using Hardmob.Helpers;
+﻿// Ignore Spelling: Hardmob
+
+using Hardmob.Helpers;
 using IniParser.Model;
 using Newtonsoft.Json.Linq;
 using RestSharp;
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Cache;
-using System.Net.Http;
 using System.Text;
-using System.Threading;
 
 namespace Hardmob
 {
@@ -71,7 +67,7 @@ namespace Hardmob
         /// <summary>
         /// Forum ID for promo
         /// </summary>
-        private const int PROMO_FORUM_ID = 407;
+        private const string PROMO_FORUM_ID = """407-Promocoes""";
 
         /// <summary>
         /// Interval between redirect tries
@@ -131,9 +127,14 @@ namespace Hardmob
         private readonly RequestCachePolicy _Cache = new(RequestCacheLevel.NoCacheNoStore);
 
         /// <summary>
+        /// Waiting for <see cref="_Active"/> changes
+        /// </summary>
+        private readonly CancellationTokenSource _Cancellation = new();
+
+        /// <summary>
         /// Web cookies
         /// </summary>
-        private readonly Dictionary<string, string> _Cookies = new(StringComparer.OrdinalIgnoreCase);
+        private readonly CookieContainer _Cookies = new();
 
         /// <summary>
         /// Main thread
@@ -148,7 +149,7 @@ namespace Hardmob
         /// <summary>
         /// Options for REST redirect
         /// </summary>
-        private readonly RestClientOptions _RedirectOptions;
+        private readonly RestClientOptions? _RedirectOptions;
 
         /// <summary>
         /// File to read and save state data
@@ -173,19 +174,17 @@ namespace Hardmob
         /// <summary>
         /// Redirecting request via REST
         /// </summary>
-        private RestClient _Redirect;
+        private RestClient? _Redirect;
         #endregion
 
         #region Constructors
         /// <summary>
         /// Create and start new crawler
         /// </summary>
-        public Crawler(KeyDataCollection configurations, TelegramBot bot, RestClientOptions redirect = null)
+        public Crawler(KeyDataCollection configurations, TelegramBot bot, RestClientOptions? redirect = null)
         {
             // Check configuration
-            if (configurations == null)
-                throw new ArgumentNullException(nameof(configurations));
-            this._Bot = bot ?? throw new ArgumentNullException(nameof(bot));
+            this._Bot = bot;
             this._RedirectOptions = redirect;
 
             // Fetch the configurations
@@ -209,11 +208,12 @@ namespace Hardmob
 
                     // Get next thread
                     if (state.ContainsKey(NEXT_THREAD_KEY))
-                        this._NextThread = (long)state[NEXT_THREAD_KEY];
+                        this._NextThread = (long)state[NEXT_THREAD_KEY]!;
                 }
 
                 // Throws abort exceptions
                 catch (ThreadAbortException) { throw; }
+                catch (ThreadInterruptedException) { throw; }
 
                 // Only register any other exception
                 catch (Exception ex) { ex.Log(); }
@@ -239,6 +239,7 @@ namespace Hardmob
             // Set as inactive
             this._Active = false;
             this._ActiveWait.Set();
+            this._Cancellation.Cancel();
         }
         #endregion
 
@@ -248,60 +249,61 @@ namespace Hardmob
         /// </summary>
         private string GetData(string url)
         {
+            // Response
+            HttpResponseMessage? response = null;
+
             try
             {
-                // Initializing connection
-                HttpWebRequest connection = Core.CreateWebRequest(url);
-                connection.CachePolicy = this._Cache;
-                connection.KeepAlive = true;
+                // Client HTTP
+                using HttpClient client = Core.CreateWebClient(this._Cookies);
 
-                // Join cookies
-                List<string> cookies = new(this._Cookies.Count);
-                foreach (KeyValuePair<string, string> cookie in this._Cookies)
-                    cookies.Add($"{cookie.Key}={cookie.Value}");
-                connection.Headers.Add("Cookie", string.Join(";", cookies));
+                // HTTP request
+                using HttpRequestMessage message = Core.CreateWebRequest(url, host: SERVER);
 
                 // Gets the response
-                using WebResponse webresponse = connection.GetResponse();
-                return webresponse.GetResponseText();
+                Task<HttpResponseMessage> responseAsync = client.SendAsync(message, this._Cancellation.Token);
+                responseAsync.Wait(this._Cancellation.Token);
+                response = responseAsync.Result;
+                return response.GetResponseText(this._Cancellation.Token);
             }
 
             // HTTP exceptions
-            catch (WebException wex)
+            catch (HttpRequestException wex)
             {
-                // Does have a response?
-                if (wex.Response is HttpWebResponse httpresponse)
+                // Check for the result
+                switch (wex.StatusCode)
                 {
-                    // Check for the result
-                    switch (httpresponse.StatusCode)
-                    {
-                        // Access forbidden
-                        case HttpStatusCode.Forbidden:
+                    // Access forbidden
+                    case HttpStatusCode.Forbidden:
+                        {
+                            // It's cloud-flare redirect?
+                            if (response != null && response.Headers.Server.FirstOrDefault()?.Product?.Name == """cloudflare""")
                             {
-                                // It's cloud-flare redirect?
-                                if (httpresponse.GetResponseText()?.IndexOf("history.replaceState", StringComparison.OrdinalIgnoreCase) > 0)
+                                // REST redirect enabled?
+                                if (this._RedirectOptions != null)
                                 {
-                                    // REST redirect enabled?
-                                    if (this._RedirectOptions != null)
-                                        return this.GetDataRedirect(url);
-
-                                    // Not accessible
-                                    throw;
+                                    // Try using redirect
+                                    string? redirect = this.GetDataRedirect(url);
+                                    if (redirect != null)
+                                        return redirect;
                                 }
                             }
-                            break;
-                    }
+                        }
+                        break;
                 }
 
                 // Nothing to do
                 throw;
             }
+
+            // Free response
+            finally { response?.Dispose(); }
         }
 
         /// <summary>
         /// Get HTTP data from redirect
         /// </summary>
-        private string GetDataRedirect(string url)
+        private string? GetDataRedirect(string url)
         {
             // Does have redirect options?
             if (this._RedirectOptions != null)
@@ -315,7 +317,7 @@ namespace Hardmob
                     try
                     {
                         // Get or create redirect cache
-                        RestClient redirect = this._Redirect;
+                        RestClient? redirect = this._Redirect;
                         redirect ??= this._Redirect = new(this._RedirectOptions);
 
                         // Create the request
@@ -325,22 +327,19 @@ namespace Hardmob
                         RestResponse response = redirect.Get(request);
 
                         // Get HTTP data
-                        string output = response.GetResponseText();
+                        string? output = response.GetResponseText();
 
                         // Looks like it's an JSON?
-                        if (output.Length > 0 && output[0] == '{')
+                        if (output != null && output.Length > 0 && output[0] == '{')
                         {
                             // Parsed result
-                            JObject jsonresult = null;
+                            JObject? jsonresult = null;
 
                             try
                             {
                                 // Try parse
                                 jsonresult = JObject.Parse(output);
                             }
-
-                            // Throws abort exceptions
-                            catch (ThreadAbortException) { throw; }
 
                             // Ignore other exceptions
                             catch {; }
@@ -356,42 +355,40 @@ namespace Hardmob
 
                         try
                         {
-                            // For each result header
-                            foreach (HeaderParameter header in response.Headers)
+                            // Response has headers?
+                            if (response.Headers != null)
                             {
-                                // Check if it's cookies
-                                if (header.Name.IndexOf("Set-Cookie", StringComparison.OrdinalIgnoreCase) >= 0)
+                                // For each result header
+                                foreach (HeaderParameter header in response.Headers)
                                 {
-                                    // Parsing cookies
-                                    foreach (string type in (header.Value as string).Split(';'))
+                                    // Check if it's cookies
+                                    if (header.Name.Contains("""Set-Cookie""", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        // Has key and value?
-                                        int n = type.IndexOf('=');
-                                        if (n > 0)
+                                        // Parsing cookies
+                                        foreach (string type in header.Value.Split(';'))
                                         {
-                                            // Get key
-                                            string key = type.Substring(0, n).ToLower().Trim();
-
-                                            // Looks like a good cookie?
-                                            if (key.StartsWith("bb", StringComparison.OrdinalIgnoreCase) || key.StartsWith("cf", StringComparison.OrdinalIgnoreCase))
+                                            // Has key and value?
+                                            int n = type.IndexOf('=');
+                                            if (n > 0)
                                             {
-                                                // Get value
-                                                string value = WebUtility.HtmlDecode(type.Substring(n + 1).Trim());
+                                                // Get key
+                                                string key = type[..n].ToLower().Trim();
 
-                                                // Add cookie
-                                                if (this._Cookies.ContainsKey(key))
-                                                    this._Cookies[key] = value;
-                                                else
-                                                    this._Cookies.Add(key, value);
+                                                // Looks like a good cookie?
+                                                if (key.StartsWith("""bb""", StringComparison.OrdinalIgnoreCase) || key.StartsWith("""cf""", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    // Get value
+                                                    string value = WebUtility.HtmlDecode(type[(n + 1)..].Trim());
+
+                                                    // Add cookie
+                                                    this._Cookies.Add(new Cookie(key, value));
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-
-                        // Throws abort exceptions
-                        catch (ThreadAbortException) { throw; }
 
                         // Ignore other exceptions
                         catch {; }
@@ -435,7 +432,7 @@ namespace Hardmob
         /// <summary>
         /// Read text from a thread ID
         /// </summary>
-        private ThreadStatus GetThread(long id, out string text)
+        private ThreadStatus GetThread(long id, out string? text)
         {
             try
             {
@@ -446,6 +443,8 @@ namespace Hardmob
 
             // Throws abort exceptions
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
+            catch (OperationCanceledException) { throw; }
 
             // HTTP exceptions
             catch (WebException wex)
@@ -515,7 +514,7 @@ namespace Hardmob
                         Debug.Write($"Fetching IDs... ");
 
                         // List all available IDs
-                        HashSet<long> ids = new(this.ThreadsID());
+                        HashSet<long> ids = [.. this.ThreadsID()];
 
                         // Did get any thread?
                         if (ids.Count > 0)
@@ -540,6 +539,8 @@ namespace Hardmob
 
                                     // Throw thread abortion
                                     catch (ThreadAbortException) { throw; }
+                                    catch (ThreadInterruptedException) { throw; }
+                                    catch (OperationCanceledException) { throw; }
 
                                     // Any other exception
                                     catch (Exception ex)
@@ -566,6 +567,8 @@ namespace Hardmob
 
                     // Throw thread abortion
                     catch (ThreadAbortException) { throw; }
+                    catch (ThreadInterruptedException) { throw; }
+                    catch (OperationCanceledException) { throw; }
 
                     // Other exceptions
                     catch (Exception ex)
@@ -608,6 +611,8 @@ namespace Hardmob
 
             // Ignore abort exceptions
             catch (ThreadAbortException) {; }
+            catch (ThreadInterruptedException) {; }
+            catch (OperationCanceledException) {; }
 
             // Report any other exception
             catch (Exception ex) { ex.Log(); }
@@ -622,10 +627,10 @@ namespace Hardmob
             Debug.Write($"Processing thread {id}... ");
 
             // Fetch HTML data
-            if (this.GetThread(id, out string threadtext) == ThreadStatus.Public)
+            if (this.GetThread(id, out string? threadtext) == ThreadStatus.Public)
             {
                 // Parse data and process
-                if (PromoThread.TryParse(threadtext, id, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread thread))
+                if (PromoThread.TryParse(threadtext, id, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread? thread))
                 {
                     // Process thread data
                     this.ProcessThread(thread);
@@ -689,7 +694,7 @@ namespace Hardmob
 
                 // Limiting the length
                 if (parsed.Length > SEND_PHOTO_CAPTION_LENGTH)
-                    caption = caption.Substring(0, caption.Length - (parsed.Length - SEND_PHOTO_CAPTION_LENGTH));
+                    caption = caption[..^(parsed.Length - SEND_PHOTO_CAPTION_LENGTH)];
 
                 // Send as photo
                 this._Bot.SendPhoto(thread.Image, caption, TelegramParseModes.HTML);
@@ -701,7 +706,7 @@ namespace Hardmob
 
                 // Limiting the length
                 if (parsed.Length > SEND_MESSAGE_TEXT_LENGTH)
-                    text = text.Substring(0, text.Length - (parsed.Length - SEND_MESSAGE_TEXT_LENGTH));
+                    text = text[..^(parsed.Length - SEND_MESSAGE_TEXT_LENGTH)];
 
                 // Send as message
                 this._Bot.SendMessage(text, TelegramParseModes.HTML);
@@ -717,7 +722,7 @@ namespace Hardmob
             Debug.Write("Saving state... ");
 
             // Create state data
-            JObject state = new();
+            JObject state = [];
             state[NEXT_THREAD_KEY] = this._NextThread;
 
             // Save to file
@@ -754,7 +759,7 @@ namespace Hardmob
                     break;
 
                 // Get the ID parameter, end
-                int idend = response.IndexOf("\"", idstart + 4);
+                int idend = response.IndexOf('\"', idstart + 4);
                 if (idend < 0)
                     break;
 
@@ -764,7 +769,7 @@ namespace Hardmob
                 // Remove any suffix
                 int suffix = idraw.LastIndexOfAny(THREAD_ID_SUFIX);
                 if (suffix > 0)
-                    idraw = idraw.Substring(suffix + 1);
+                    idraw = idraw[(suffix + 1)..];
 
                 // Try parse to ID
                 if (long.TryParse(idraw, out long id))

@@ -1,8 +1,8 @@
-﻿using System;
+﻿// Ignore Spelling: Hardmob
+
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
-using System.Threading;
 
 namespace Hardmob.Helpers
 {
@@ -15,7 +15,7 @@ namespace Hardmob.Helpers
         /// <summary>
         /// Source name to write logs to
         /// </summary>
-        private static readonly string EVENT_LOG_SOURCE = Assembly.GetEntryAssembly().GetCustomAttribute<AssemblyProductAttribute>().Product;
+        private static readonly string EVENT_LOG_SOURCE = Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyProductAttribute>()?.Product ?? """Hardmob""";
         #endregion
 
         #region Public
@@ -36,18 +36,18 @@ namespace Hardmob.Helpers
             try
             {
                 // Exception is forum thread? Use the inner exception
-                CrawlerThreadException crawler = exception as CrawlerThreadException;
-                if (crawler != null)
+                CrawlerThreadException? crawler = exception as CrawlerThreadException;
+                if (crawler != null && crawler.InnerException != null)
                     exception = crawler.InnerException;
 
                 // Building the exception
                 StringBuilder message = new();
-                message.AppendLine($"Exception: {exception.GetType().FullName}");
-                message.AppendLine($"Message: {exception.Message}");
+                message.AppendLine($"Exception: {exception?.GetType().FullName}");
+                message.AppendLine($"Message: {exception?.Message}");
                 if (crawler != null)
                     message.AppendLine($"Forum thread: {crawler.ID}");
                 message.AppendLine("Stack:");
-                message.AppendLine(exception.StackTrace);
+                message.AppendLine(exception?.StackTrace);
 
                 // Log it
                 Log(message.ToString());
@@ -55,6 +55,7 @@ namespace Hardmob.Helpers
 
             // Throws thread abort
             catch (ThreadAbortException) { throw; }
+            catch (ThreadInterruptedException) { throw; }
 
             // Ignores other further exceptions
             catch {; }
