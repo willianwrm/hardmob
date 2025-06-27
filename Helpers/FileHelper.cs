@@ -17,12 +17,12 @@ namespace Hardmob.Helpers
         private enum SymbolicLink
         {
             /// <summary>
-            /// Arquivo
+            /// The link target is a file
             /// </summary>
             File = 0,
 
             /// <summary>
-            /// Pasta
+            /// The link target is a directory
             /// </summary>
             Directory = 1,
 

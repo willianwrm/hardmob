@@ -6,12 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
-    <PlatformTarget>x64</PlatformTarget>
-    <PublishTrimmed>True</PublishTrimmed>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <PublishTrimmed>false</PublishTrimmed>
     <Copyright>Willian Rodrigues de Moura</Copyright>
     <NeutralLanguage>en</NeutralLanguage>
     <AssemblyVersion>2.0.0</AssemblyVersion>
     <FileVersion>2.0.0</FileVersion>
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -33,6 +34,7 @@
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.6.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.6" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="PuppeteerExtraSharp" Version="2.0.0" />
     <PackageReference Include="RestSharp" Version="112.1.0" />
   </ItemGroup>
 

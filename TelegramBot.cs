@@ -33,7 +33,7 @@ namespace Hardmob
         /// <summary>
         /// JSON content-type header value
         /// </summary>
-        private const string JSON_CONTENT_TYPE = """application/json;charset=utf-8""";
+        private const string JSON_CONTENT_TYPE = """application/json""";
 
         /// <summary>
         /// Maximum size for file photo size, in bytes
@@ -63,7 +63,12 @@ namespace Hardmob
         /// <summary>
         /// Telegram API address
         /// </summary>
-        private const string TELEGRAM_API_URL = """https://api.telegram.org/""";
+        private const string TELEGRAM_API_HOST = """api.telegram.org""";
+
+        /// <summary>
+        /// Telegram API address
+        /// </summary>
+        private const string TELEGRAM_API_URL = $"https://{TELEGRAM_API_HOST}/";
 
         /// <summary>
         /// Telegram API method to send messages
@@ -276,12 +281,11 @@ namespace Hardmob
             }
 
             // Web exceptions
-            catch (WebException wex)
+            catch (HttpRequestException hre)
             {
                 // Is there a response?
-                string? errortext = wex.Response?.GetResponseText();
-                if (errortext != null)
-                    throw new WebException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {wex.Message}{Environment.NewLine}{errortext}", wex, wex.Status, wex.Response);
+                if (hre.Data["""respose"""] is string errortext)
+                    throw new WebException($"{TelegramBot.ResourceManager.GetString("InvalidResponse")}: {hre.Message}{Environment.NewLine}{errortext}", hre);
 
                 // Nothing to do
                 throw;
@@ -491,21 +495,17 @@ namespace Hardmob
             // Prepare full message
             string rawmessage = message.ToString(Formatting.None);
 
-            // Encode to UTF-8
-            byte[] data = Encoding.UTF8.GetBytes(rawmessage);
-            ByteArrayContent content = new(data);
-            content.Headers.ContentType = MediaTypeHeaderValue.Parse(JSON_CONTENT_TYPE);
-
             // Client HTTP
             using HttpClient client = Core.CreateWebClient(this._Cookies);
 
             // HTTP request
-            using HttpRequestMessage httpMessage = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", HttpMethod.Post);
-            httpMessage.Content = content;
+            using HttpRequestMessage httpMessage = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{command}", HttpMethod.Post, TELEGRAM_API_HOST);
+            httpMessage.Content = new StringContent(rawmessage, Encoding.UTF8, JSON_CONTENT_TYPE);
 
             // Gets result and check it
-            using HttpResponseMessage response = client.Send(httpMessage, this._Cancellation.Token);
-            CheckTelegramResponse(response);
+            using Task<HttpResponseMessage> responseAsync = client.SendAsync(httpMessage, this._Cancellation.Token);
+            responseAsync.Wait(this._Cancellation.Token);
+            CheckTelegramResponse(responseAsync.Result);
         }
 
         /// <summary>
@@ -553,8 +553,9 @@ namespace Hardmob
             using MemoryStream imagestream = new();
             {
                 // Read response to stream
-                using HttpResponseMessage response = client.Send(httpMessage, this._Cancellation.Token);
-                using HttpContent responseContent = response.Content;
+                using Task<HttpResponseMessage> responseAsync = client.SendAsync(httpMessage, this._Cancellation.Token);
+                responseAsync.Wait(this._Cancellation.Token);
+                using HttpContent responseContent = responseAsync.Result.Content;
                 using Stream webstream = responseContent.ReadAsStream(this._Cancellation.Token);
                 webstream.CopyTo(imagestream);
                 imagestream.Position = 0;
@@ -708,12 +709,13 @@ namespace Hardmob
             }
 
             // HTTP request
-            using HttpRequestMessage telegramPost = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", HttpMethod.Post);
+            using HttpRequestMessage telegramPost = Core.CreateWebRequest($"{TELEGRAM_API_URL}bot{this._Token}/{TELEGRAM_SEND_PHOTO_COMMAND}", HttpMethod.Post, TELEGRAM_API_HOST);
             telegramPost.Content = multipart;
 
             // Gets result and check it
-            using HttpResponseMessage telegramResponse = client.Send(telegramPost, this._Cancellation.Token);
-            CheckTelegramResponse(telegramResponse);
+            using Task<HttpResponseMessage> telegramResponseAsync = client.SendAsync(telegramPost, this._Cancellation.Token);
+            telegramResponseAsync.Wait(this._Cancellation.Token);
+            CheckTelegramResponse(telegramResponseAsync.Result);
         }
 
         /// <summary>

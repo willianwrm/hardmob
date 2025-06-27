@@ -127,7 +127,7 @@ namespace Hardmob
                                         break;
 
                                     // Find where it ends
-                                    int imgtagend = content.IndexOf("/>", imgtagstart + 4, StringComparison.Ordinal);
+                                    int imgtagend = content.IndexOf('>', imgtagstart + 4);
                                     if (imgtagend <= imgtagstart)
                                         break;
 
@@ -322,7 +322,7 @@ namespace Hardmob
                     break;
 
                 // Next end
-                int end = input.IndexOf("""/>""", start, StringComparison.OrdinalIgnoreCase);
+                int end = input.IndexOf(""">""", start, StringComparison.OrdinalIgnoreCase);
                 if (end <= start)
                     break;
 

@@ -70,6 +70,11 @@ namespace Hardmob
         private const string PROMO_FORUM_ID = """407-Promocoes""";
 
         /// <summary>
+        /// How many times should fall to puppeteer directly
+        /// </summary>
+        private const int PUPPETEER_TIMES = 30;
+
+        /// <summary>
         /// Interval between redirect tries
         /// </summary>
         private const int REDIRECT_RETRY_INTERVAL = 1000;
@@ -175,6 +180,11 @@ namespace Hardmob
         /// Redirecting request via REST
         /// </summary>
         private RestClient? _Redirect;
+
+        /// <summary>
+        /// Must use puppeteer directly, will count-down until zero
+        /// </summary>
+        private int _UsePuppeteer;
         #endregion
 
         #region Constructors
@@ -249,8 +259,29 @@ namespace Hardmob
         /// </summary>
         private string GetData(string url)
         {
-            // Response
+            // HTTP response
             HttpResponseMessage? response = null;
+
+            // Should use puppeteer?
+            if (this._UsePuppeteer > 0)
+            {
+                // Let try directly in the future
+                this._UsePuppeteer--;
+
+                try
+                {
+                    // Lets try puppeteer directly
+                    return Puppeteer.Navigate(url, this._Cancellation.Token);
+                }
+
+                // Throw thread abortion
+                catch (ThreadAbortException) { throw; }
+                catch (ThreadInterruptedException) { throw; }
+                catch (OperationCanceledException) { throw; }
+
+                // Do not use it directly next time
+                catch { this._UsePuppeteer = 0; }
+            }
 
             try
             {
@@ -261,7 +292,7 @@ namespace Hardmob
                 using HttpRequestMessage message = Core.CreateWebRequest(url, host: SERVER);
 
                 // Gets the response
-                Task<HttpResponseMessage> responseAsync = client.SendAsync(message, this._Cancellation.Token);
+                using Task<HttpResponseMessage> responseAsync = client.SendAsync(message, this._Cancellation.Token);
                 responseAsync.Wait(this._Cancellation.Token);
                 response = responseAsync.Result;
                 return response.GetResponseText(this._Cancellation.Token);
@@ -287,6 +318,15 @@ namespace Hardmob
                                     if (redirect != null)
                                         return redirect;
                                 }
+
+                                // Lets try puppeteer
+                                string puppeteerResult = Puppeteer.Navigate(url, this._Cancellation.Token);
+
+                                // Using it next time
+                                this._UsePuppeteer = PUPPETEER_TIMES;
+
+                                // Return result
+                                return puppeteerResult;
                             }
                         }
                         break;
@@ -296,7 +336,7 @@ namespace Hardmob
                 throw;
             }
 
-            // Free response
+            // Free HTTP response
             finally { response?.Dispose(); }
         }
 
@@ -381,7 +421,7 @@ namespace Hardmob
                                                     string value = WebUtility.HtmlDecode(type[(n + 1)..].Trim());
 
                                                     // Add cookie
-                                                    this._Cookies.Add(new Cookie(key, value));
+                                                    this._Cookies.Add(new Uri(url), new Cookie(key, value));
                                                 }
                                             }
                                         }
@@ -681,7 +721,7 @@ namespace Hardmob
             {
                 // Write description
                 output.AppendLine();
-                output.AppendLine(thread.Extra);
+                output.AppendLine(WebUtility.HtmlEncode(thread.Extra));
                 parsed.AppendLine();
                 parsed.AppendLine(thread.Extra);
             }
