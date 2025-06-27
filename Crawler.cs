@@ -670,7 +670,7 @@ namespace Hardmob
             if (this.GetThread(id, out string? threadtext) == ThreadStatus.Public)
             {
                 // Parse data and process
-                if (PromoThread.TryParse(threadtext, id, $"{BASE_URL}{THREADS_URL}/{id}", out PromoThread? thread))
+                if (PromoThread.TryParse(threadtext, id, $"{BASE_URL}{THREADS_URL}/{id}", this._Cancellation.Token, out PromoThread? thread))
                 {
                     // Process thread data
                     this.ProcessThread(thread);

@@ -58,7 +58,7 @@ namespace Hardmob
         /// <summary>
         /// Try extract promo info from raw HTML
         /// </summary>
-        public static bool TryParse([NotNullWhen(true)] string? input, long id, string url, [NotNullWhen(true)] out PromoThread? promo)
+        public static bool TryParse([NotNullWhen(true)] string? input, long id, string url, CancellationToken cancellation, [NotNullWhen(true)] out PromoThread? promo)
         {
             // Check input
             if (input != null)
@@ -156,6 +156,9 @@ namespace Hardmob
                             }
                         }
 
+                        // Check for cancellation
+                        cancellation.ThrowIfCancellationRequested();
+
                         // Get description meta
                         string? description = GetDescriptionMeta(input);
                         if (description != null)
@@ -191,6 +194,9 @@ namespace Hardmob
                                 promo.Extra = string.Join(Environment.NewLine, extra);
                         }
 
+                        // Check for cancellation
+                        cancellation.ThrowIfCancellationRequested();
+
                         // Missing link or image?
                         if (promo.Link == null || promo.Image == null)
                         {
@@ -222,7 +228,7 @@ namespace Hardmob
                             if (promo.Image == null && promo.Link != null)
                             {
                                 // Try fetch the image from the link
-                                if (TryFetchImage(promo.Link, out string? image))
+                                if (TryFetchImage(promo.Link, cancellation, out string ? image))
                                     promo.Image = image;
                             }
                         }
@@ -501,7 +507,7 @@ namespace Hardmob
         /// <summary>
         /// Try to fetch an image from URL HTML
         /// </summary>
-        public static bool TryFetchImage(string url, [NotNullWhen(true)] out string? image)
+        public static bool TryFetchImage(string url, CancellationToken cancellation, [NotNullWhen(true)] out string? image)
         {
             try
             {
@@ -512,8 +518,9 @@ namespace Hardmob
                 using HttpRequestMessage message = Core.CreateWebRequest(url);
 
                 // Gets the response
-                using HttpResponseMessage response = client.Send(message);
-                string responsetext = response.GetResponseText();
+                using Task<HttpResponseMessage> responseAsync = client.SendAsync(message, cancellation);
+                responseAsync.Wait(cancellation);
+                string responsetext = responseAsync.Result.GetResponseText();
 
                 // Buffered values from fetch
                 Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
@@ -682,7 +689,7 @@ namespace Hardmob
                 if (n > 0)
                 {
                     // Tries without parameters
-                    return TryFetchImage(url[..n], out image);
+                    return TryFetchImage(url[..n], cancellation, out image);
                 }
             }
 
